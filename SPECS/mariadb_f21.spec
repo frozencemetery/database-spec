@@ -118,7 +118,7 @@
 
 Name:             mariadb
 Version:          %{compatver}.%{bugfixver}
-Release:          1%{?with_debug:.debug}%{?dist}
+Release:          2%{?with_debug:.debug}%{?dist}
 Epoch:            1
 
 Summary:          A community developed branch of MySQL
@@ -169,6 +169,8 @@ Patch33:          %{pkgnamepatch}-covscan-signexpr.patch
 Patch34:          %{pkgnamepatch}-covscan-stroverflow.patch
 Patch35:          %{pkgnamepatch}-config.patch
 Patch36:          %{pkgnamepatch}-ssltest.patch
+
+Patch100:         mariadb-krb5.patch
 
 BuildRequires:    cmake
 BuildRequires:    libaio-devel
@@ -505,6 +507,8 @@ MariaDB is a community developed branch of MySQL.
 %patch34 -p1
 %patch35 -p1
 %patch36 -p1
+
+%patch100 -p1
 
 # removing bundled cmd-line-utils
 rm -r cmd-line-utils
@@ -1187,6 +1191,9 @@ fi
 %endif
 
 %changelog
+* Tue Apr 21 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-2
+- Add krb gsoc patch
+
 * Wed Mar 04 2015 Honza Horak <hhorak@redhat.com> - 1:10.0.17-1
 - Rebase to version 10.0.17
 
