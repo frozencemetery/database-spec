@@ -118,7 +118,7 @@
 
 Name:             mariadb
 Version:          %{compatver}.%{bugfixver}
-Release:          3%{?with_debug:.debug}%{?dist}
+Release:          4%{?with_debug:.debug}%{?dist}
 Epoch:            1
 
 Summary:          A community developed branch of MySQL
@@ -1191,6 +1191,9 @@ fi
 %endif
 
 %changelog
+* Thu Apr 23 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-4
+- Update krb5 patch
+
 * Wed Apr 23 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-3
 - Disable self-test
 
