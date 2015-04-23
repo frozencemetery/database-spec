@@ -4,7 +4,7 @@
 # Regression tests may take a long time (many cores recommended), skip them by
 # passing --nocheck to rpmbuild or by setting runselftest to 0 if defining
 # --nocheck is not possible (e.g. in koji build)
-%{!?runselftest:%global runselftest 1}
+%{!?runselftest:%global runselftest 0}
 
 # In f20+ use unversioned docdirs, otherwise the old versioned one
 %{!?_pkgdocdir: %global _pkgdocdir %{_docdir}/%{name}-%{version}}
@@ -118,7 +118,7 @@
 
 Name:             mariadb
 Version:          %{compatver}.%{bugfixver}
-Release:          2%{?with_debug:.debug}%{?dist}
+Release:          3%{?with_debug:.debug}%{?dist}
 Epoch:            1
 
 Summary:          A community developed branch of MySQL
@@ -1191,6 +1191,9 @@ fi
 %endif
 
 %changelog
+* Wed Apr 23 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-3
+- Disable self-test
+
 * Tue Apr 21 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-2
 - Add krb gsoc patch
 
