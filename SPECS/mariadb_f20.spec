@@ -11,7 +11,7 @@
 
 Name: mariadb
 Version: 5.5.42
-Release: 3%{?dist}
+Release: 4%{?dist}
 Epoch: 1
 
 Summary: A community developed branch of MySQL
@@ -806,6 +806,9 @@ fi
 %{_mandir}/man1/mysql_client_test.1*
 
 %changelog
+* Wed Jun 03 2015 Robbie Harwood <rharwood@redhat.com> - 1:5.5.42-4
+- Bump patch
+
 * Wed Apr 08 2015 Robbie Harwood <rharwood@redhat.com> - 1:5.5.42-3
 - Disable running tests
 
