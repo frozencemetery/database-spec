@@ -32,7 +32,7 @@
 %{!?beta:%global beta 0}
 %{?beta:%global __os_install_post /usr/lib/rpm/brp-compress}
 
-%{!?test:%global test 1}
+%{!?test:%global test 0}
 %{!?upgrade:%global upgrade 1}
 %{!?plpython:%global plpython 1}
 %if 0%{?fedora} > 12
@@ -51,7 +51,7 @@
 %{!?pam:%global pam 1}
 %{!?sdt:%global sdt 1}
 %{!?selinux:%global selinux 1}
-%{!?runselftest:%global runselftest 1}
+%{!?runselftest:%global runselftest 0}
 
 # do not fail on 32-bit architectures with globally enabled hardening, see the
 # FESCO ticket #1384 and rhbz#947022 for more info.
