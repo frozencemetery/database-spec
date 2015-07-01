@@ -1,0 +1,992 @@
+diff --git a/configure b/configure
+index 60af2a4..0e40ab6 100755
+--- a/configure
++++ b/configure
+@@ -710,6 +710,7 @@ with_uuid
+ with_selinux
+ with_openssl
+ krb_srvtab
++with_gssapi
+ with_python
+ with_perl
+ with_tcl
+@@ -5423,6 +5424,7 @@ $as_echo "$with_gssapi" >&6; }
+ 
+ 
+ 
++
+ #
+ # Kerberos configuration parameters
+ #
+diff --git a/configure.in b/configure.in
+index d4c6ff1..72c3bf3 100644
+--- a/configure.in
++++ b/configure.in
+@@ -630,6 +630,7 @@ PGAC_ARG_BOOL(with, gssapi, no, [build with GSSAPI support],
+   krb_srvtab="FILE:\$(sysconfdir)/krb5.keytab"
+ ])
+ AC_MSG_RESULT([$with_gssapi])
++AC_SUBST(with_gssapi)
+ 
+ 
+ AC_SUBST(krb_srvtab)
+diff --git a/doc/src/sgml/client-auth.sgml b/doc/src/sgml/client-auth.sgml
+index a46ba3e..a8f1134 100644
+--- a/doc/src/sgml/client-auth.sgml
++++ b/doc/src/sgml/client-auth.sgml
+@@ -913,9 +913,10 @@ omicron         bryanh                  guest1
+     <productname>GSSAPI</productname> with <productname>Kerberos</productname>
+     authentication according to RFC 1964. <productname>GSSAPI</productname>
+     provides automatic authentication (single sign-on) for systems
+-    that support it. The authentication itself is secure, but the
+-    data sent over the database connection will be sent unencrypted unless
+-    <acronym>SSL</acronym> is used.
++    that support it. The authentication itself is secure, and GSSAPI can be
++    used for connection encryption as well (see the
++    <literal>require_encrypt</literal> parameter below); <acronym>SSL</acronym>
++    can also be used for connection security.
+    </para>
+ 
+    <para>
+@@ -1040,6 +1041,18 @@ omicron         bryanh                  guest1
+        </para>
+       </listitem>
+      </varlistentry>
++
++     <varlistentry>
++      <term><literal>require_encrypt</literal></term>
++      <listitem>
++       <para>
++        Whether to require GSSAPI encryption.  Default is off, which causes
++        GSSAPI encryption to be enabled if available and requested for
++        compatability with old clients.  It is recommended to set this unless
++        old clients are present.
++       </para>
++      </listitem>
++     </varlistentry>
+     </variablelist>
+    </para>
+   </sect2>
+diff --git a/doc/src/sgml/libpq.sgml b/doc/src/sgml/libpq.sgml
+index 8ac9f1e..93aa349 100644
+--- a/doc/src/sgml/libpq.sgml
++++ b/doc/src/sgml/libpq.sgml
+@@ -1353,6 +1353,18 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
+       </listitem>
+      </varlistentry>
+ 
++     <varlistentry id="libpq-connect-gss-enc-require" xreflabel="gss-enc-require">
++      <term><literal>gss_enc_require</literal></term>
++      <listitem>
++       <para>
++        If set, whether to require GSSAPI encryption support from the remote
++        server. Defaults to unset, which will cause the client to fall back to
++        not using GSSAPI encryption if the server does not support encryption
++        through GSSAPI.
++       </para>
++      </listitem>
++     </varlistentry>
++
+      <varlistentry id="libpq-connect-service" xreflabel="service">
+       <term><literal>service</literal></term>
+       <listitem>
+diff --git a/doc/src/sgml/protocol.sgml b/doc/src/sgml/protocol.sgml
+index cec5697..aa20610 100644
+--- a/doc/src/sgml/protocol.sgml
++++ b/doc/src/sgml/protocol.sgml
+@@ -1295,6 +1295,46 @@
+     of authentication checking.
+    </para>
+   </sect2>
++
++  <sect2>
++   <title><acronym>GSSAPI</acronym> Session Encryption</title>
++
++   <para>
++    If <productname>PostgreSQL</> was built with
++    <acronym>GSSAPI</acronym> and <acronym>GSSAPI</acronym> support, traffic
++    can also be encrypted using <acronym>GSSAPI</acronym>. To force encryption
++    using <acronym>GSSAPI</acronym>, set require_encrypt in
++    <filename>pg_hba.conf</filename>.
++   </para>
++
++   <para>
++    In order to probe for <acronym>GSSAPI</acronym> support, the client will
++    include in their StartupMessage the parameter gss_encrypt. If the server
++    does not support <acronym>GSSAPI</acronym> or <acronym>GSSAPI</acronym>
++    encryption, the server will error the connection; otherwise, it continues
++    as normal. The client may retry the connection
++    without <acronym>GSSAPI</acronym> encryption support depending on its
++    settings. If the client does not probe support, depending on settings
++    in <filename>pg_hba.conf</filename>, the server may drop
++    <acronym>GSSAPI</acronym>-authenticated connections without encryption.
++   </para>
++
++   <para>
++    If the client has probed <acronym>GSSAPI</acronym> encryption support and
++    the connection is <acronym>GSSAPI</acronym>-authenticated, then after the
++    server sends AuthenticationOk, all traffic between the client and server
++    will be <acronym>GSSAPI</acronym>-encrypted. Because
++    <acronym>GSSAPI</acronym> does not provide framing,
++    <acronym>GSSAPI</acronym>-encrypted messages are modeled after protocol-3
++    messages: the first byte is the caracter g, then four bytes of length, and
++    then an encrypted message.
++   </para>
++
++   <para>
++     It is valid to use <acronym>GSSAPI</acronym> encryption over
++     <acronym>SSL</acronym>-encrypted connections.
++   </para>
++  </sect2>
+  </sect1>
+ 
+ <sect1 id="protocol-replication">
+diff --git a/doc/src/sgml/runtime.sgml b/doc/src/sgml/runtime.sgml
+index 39bb747..79ebeb6 100644
+--- a/doc/src/sgml/runtime.sgml
++++ b/doc/src/sgml/runtime.sgml
+@@ -1817,7 +1817,7 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
+   </para>
+ 
+   <para>
+-   To prevent spoofing on TCP connections, the best solution is to use
++   To prevent spoofing on TCP connections, one possible solution is to use
+    SSL certificates and make sure that clients check the server's certificate.
+    To do that, the server
+    must be configured to accept only <literal>hostssl</> connections (<xref
+@@ -1827,6 +1827,15 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
+    <literal>verify-full</> and have the appropriate root certificate
+    file installed (<xref linkend="libq-ssl-certificates">).
+   </para>
++
++  <para>
++   Another way of preventing spoofing on TCP connections is to use GSSAPI
++   encryption. In order to force all GSSAPI connections to be encrypted, one
++   should set <literal>require_encrypt</> in <filename>pg_hba.conf</> on GSS
++   connections. Then, using Kerberos, the client and server will mutually
++   authenticate, and the connection will be encrypted once the authentication
++   step is complete.
++  </para>
+  </sect1>
+ 
+  <sect1 id="encryption-options">
+@@ -1942,6 +1951,15 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
+       connect to servers only via SSL. <application>Stunnel</> or
+       <application>SSH</> can also be used to encrypt transmissions.
+      </para>
++
++     <para>
++      GSSAPI connections can also encrypt all data sent across the
++      network. In the <filename>pg_hba.conf</> file, the GSS authenticaion
++      method has a parameter to require encryption; otherwise, connections
++      will be encrypted if available and requiested by the client. On the
++      client side, there is also a parameter to require GSSAPI encryption
++      support from the server.
++     </para>
+     </listitem>
+   </varlistentry>
+ 
+diff --git a/src/Makefile.global.in b/src/Makefile.global.in
+index 73a8683..d048e95 100644
+--- a/src/Makefile.global.in
++++ b/src/Makefile.global.in
+@@ -166,6 +166,7 @@ with_perl	= @with_perl@
+ with_python	= @with_python@
+ with_tcl	= @with_tcl@
+ with_openssl	= @with_openssl@
++with_gssapi 	= @with_gssapi@
+ with_selinux	= @with_selinux@
+ with_libxml	= @with_libxml@
+ with_libxslt	= @with_libxslt@
+diff --git a/src/backend/libpq/Makefile b/src/backend/libpq/Makefile
+index e929864..b08be6a 100644
+--- a/src/backend/libpq/Makefile
++++ b/src/backend/libpq/Makefile
+@@ -17,4 +17,8 @@ include $(top_builddir)/src/Makefile.global
+ OBJS = be-fsstubs.o be-secure.o auth.o crypt.o hba.o ip.o md5.o pqcomm.o \
+        pqformat.o pqsignal.o
+ 
++ifeq ($(with_gssapi),yes)
++OBJS += be-secure-gss.o
++endif
++
+ include $(top_srcdir)/src/backend/common.mk
+diff --git a/src/backend/libpq/auth.c b/src/backend/libpq/auth.c
+index 60d8d88..32749d4 100644
+--- a/src/backend/libpq/auth.c
++++ b/src/backend/libpq/auth.c
+@@ -734,7 +734,7 @@ static GSS_DLLIMP gss_OID GSS_C_NT_USER_NAME = &GSS_C_NT_USER_NAME_desc;
+ #endif
+ 
+ 
+-static void
++void
+ pg_GSS_error(int severity, char *errmsg, OM_uint32 maj_stat, OM_uint32 min_stat)
+ {
+ 	gss_buffer_desc gmsg;
+diff --git a/src/backend/libpq/be-secure-gss.c b/src/backend/libpq/be-secure-gss.c
+new file mode 100644
+index 0000000..64a4ed7
+--- /dev/null
++++ b/src/backend/libpq/be-secure-gss.c
+@@ -0,0 +1,101 @@
++#include <assert.h>
++
++#include "postgres.h"
++
++#include "libpq/libpq.h"
++#include "libpq/auth.h"
++#include "miscadmin.h"
++
++/* GUC value */
++bool gss_encrypt;
++
++size_t
++be_gss_encrypt(Port *port, char msgtype, const char **msgptr, size_t len)
++{
++	OM_uint32 major, minor;
++	gss_buffer_desc input, output;
++	uint32 len_n;
++	int conf;
++	char *ptr = *((char **)msgptr);
++	char *newbuf = palloc(len + 5);
++
++	len += 4;
++	len_n = htonl(len);
++
++	newbuf[0] = msgtype;
++	memcpy(newbuf + 1, &len_n, 4);
++	memcpy(newbuf + 5, ptr, len - 4);
++
++	input.length = len + 1; /* include type */
++	input.value = newbuf;
++	output.length = 0;
++	output.value = NULL;
++
++	major = gss_wrap(&minor, port->gss->ctx, 1, GSS_C_QOP_DEFAULT, &input,
++					 &conf, &output);
++	if (GSS_ERROR(major))
++	{
++		pg_GSS_error(ERROR, gettext_noop("unwrapping GSS message failed"),
++					 major, minor);
++		return -1;
++	}
++	assert(conf);
++
++	newbuf = repalloc(newbuf, output.length);
++	memcpy(newbuf, output.value, output.length);
++
++	len = output.length;
++	*msgptr = newbuf;
++	gss_release_buffer(&minor, &output);
++
++	return len;
++}
++
++int
++be_gss_inplace_decrypt(StringInfo inBuf)
++{
++	OM_uint32 major, minor;
++	gss_buffer_desc input, output;
++	int qtype, conf;
++	size_t msglen = 0;
++
++	input.length = inBuf->len;
++	input.value = inBuf->data;
++	output.length = 0;
++	output.value = NULL;
++
++	major = gss_unwrap(&minor, MyProcPort->gss->ctx, &input, &output,
++					   &conf, NULL);
++	if (GSS_ERROR(major))
++	{
++		pg_GSS_error(ERROR, gettext_noop("wrapping GSS message failed"),
++					 major, minor);
++		return -1;
++	}
++	else if (conf == 0)
++	{
++		ereport(COMMERROR,
++				(errcode(ERRCODE_PROTOCOL_VIOLATION),
++				 errmsg("Expected GSSAPI confidentiality but it was not received")));
++		return -1;
++	}
++
++	qtype = ((char *)output.value)[0]; /* first byte is message type */
++	inBuf->len = output.length - 5; /* message starts */
++
++	memcpy((char *)&msglen, ((char *)output.value) + 1, 4);
++	msglen = ntohl(msglen);
++	if (msglen - 4 != inBuf->len)
++	{
++		ereport(COMMERROR,
++				(errcode(ERRCODE_PROTOCOL_VIOLATION),
++				 errmsg("Length value inside GSSAPI-encrypted packet was malformed")));
++		return -1;
++	}
++
++	memcpy(inBuf->data, ((char *)output.value) + 5, inBuf->len);
++	inBuf->data[inBuf->len] = '\0'; /* invariant */
++	gss_release_buffer(&minor, &output);
++
++	return qtype;
++}
+diff --git a/src/backend/libpq/hba.c b/src/backend/libpq/hba.c
+index fc7978b..858258b 100644
+--- a/src/backend/libpq/hba.c
++++ b/src/backend/libpq/hba.c
+@@ -1559,6 +1559,15 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline, int line_num)
+ 		else
+ 			hbaline->include_realm = false;
+ 	}
++	else if (strcmp(name, "require_encrypt") == 0)
++	{
++		if (hbaline->auth_method != uaGSS)
++			INVALID_AUTH_OPTION("require_encrypt", "gssapi");
++		if (strcmp(val, "1") == 0)
++			hbaline->require_encrypt = true;
++		else
++			hbaline->require_encrypt = false;
++	}
+ 	else if (strcmp(name, "radiusserver") == 0)
+ 	{
+ 		struct addrinfo *gai_result;
+diff --git a/src/backend/libpq/pqcomm.c b/src/backend/libpq/pqcomm.c
+index 49a394b..51bfaf6 100644
+--- a/src/backend/libpq/pqcomm.c
++++ b/src/backend/libpq/pqcomm.c
+@@ -1465,6 +1465,19 @@ pq_putmessage(char msgtype, const char *s, size_t len)
+ {
+ 	if (DoingCopyOut || PqCommBusy)
+ 		return 0;
++
++#ifdef ENABLE_GSS
++	/* Do not wrap auth requests. */
++	if (MyProcPort->hba->auth_method == uaGSS && gss_encrypt &&
++		msgtype != 'R' && msgtype != 'g')
++	{
++		len = be_gss_encrypt(MyProcPort, msgtype, &s, len);
++		if (len < 0)
++			goto fail;
++		msgtype = 'g';
++	}
++#endif
++
+ 	PqCommBusy = true;
+ 	if (msgtype)
+ 		if (internal_putbytes(&msgtype, 1))
+@@ -1480,10 +1493,20 @@ pq_putmessage(char msgtype, const char *s, size_t len)
+ 	if (internal_putbytes(s, len))
+ 		goto fail;
+ 	PqCommBusy = false;
++#ifdef ENABLE_GSS
++	/* if we're GSSAPI encrypting, s was allocated in be_gss_encrypt */
++	if (msgtype == 'g')
++		pfree((char *)s);
++#endif
+ 	return 0;
+ 
+ fail:
+ 	PqCommBusy = false;
++#ifdef ENABLE_GSS
++	/* if we're GSSAPI encrypting, s was allocated in be_gss_encrypt */
++	if (msgtype == 'g')
++		pfree((char *)s);
++#endif
+ 	return EOF;
+ }
+ 
+@@ -1499,6 +1522,22 @@ pq_putmessage_noblock(char msgtype, const char *s, size_t len)
+ 	int res		PG_USED_FOR_ASSERTS_ONLY;
+ 	int			required;
+ 
++#ifdef ENABLE_GSS
++	/*
++	 * Because socket_putmessage is also a front-facing function, we need the
++	 * ability to GSSAPI encrypt from either.  Since socket_putmessage_noblock
++	 * calls into socket_putmessage, socket_putmessage will handle freeing the
++	 * allocated string.
++	 */
++	if (gss_encrypt && msgtype != 'R' && msgtype != 'g')
++	{
++		len = be_gss_encrypt(MyProcPort, msgtype, &s, len);
++		if (len < 0)
++			return;
++		msgtype = 'g';
++	}
++#endif
++
+ 	/*
+ 	 * Ensure we have enough space in the output buffer for the message header
+ 	 * as well as the message itself.
+diff --git a/src/backend/tcop/postgres.c b/src/backend/tcop/postgres.c
+index bc4eb33..7a85195 100644
+--- a/src/backend/tcop/postgres.c
++++ b/src/backend/tcop/postgres.c
+@@ -328,6 +328,7 @@ static int
+ SocketBackend(StringInfo inBuf)
+ {
+ 	int			qtype;
++	bool		msg_got = false;
+ 
+ 	/*
+ 	 * Get message type code from the frontend.
+@@ -357,6 +358,33 @@ SocketBackend(StringInfo inBuf)
+ 		return qtype;
+ 	}
+ 
++#ifdef ENABLE_GSS
++	else if (qtype == 'g' && gss_encrypt &&
++			 MyProcPort->hba->auth_method == uaGSS)
++	{
++		/* GSSAPI wrapping implies protocol >= 3 */
++		if (pq_getmessage(inBuf, 0))
++			return EOF;
++		msg_got = true;
++
++		qtype = be_gss_inplace_decrypt(inBuf);
++		if (qtype < 0)
++			return EOF;
++	}
++	else if (gss_encrypt && MyProcPort->hba->auth_method == uaGSS &&
++			 qtype != 'g' && qtype != 'R' )
++	{
++		/*
++		 * Either something malicious is occuring, or we have lost
++		 * synchronization.
++		 */
++		ereport(FATAL,
++				(errcode(ERRCODE_PROTOCOL_VIOLATION),
++				 errmsg("invalid frontend message type %d", qtype)));
++		return EOF;
++	}
++#endif
++
+ 	/*
+ 	 * Validate message type code before trying to read body; if we have lost
+ 	 * sync, better to say "command unknown" than to run out of memory because
+@@ -482,7 +510,7 @@ SocketBackend(StringInfo inBuf)
+ 	 * after the type code; we can read the message contents independently of
+ 	 * the type.
+ 	 */
+-	if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3)
++	if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3 && !msg_got)
+ 	{
+ 		if (pq_getmessage(inBuf, 0))
+ 			return EOF;			/* suitable message already logged */
+diff --git a/src/backend/utils/init/postinit.c b/src/backend/utils/init/postinit.c
+index 3ebd72c..ef12c35 100644
+--- a/src/backend/utils/init/postinit.c
++++ b/src/backend/utils/init/postinit.c
+@@ -31,7 +31,7 @@
+ #include "catalog/pg_db_role_setting.h"
+ #include "catalog/pg_tablespace.h"
+ #include "libpq/auth.h"
+-#include "libpq/libpq-be.h"
++#include "libpq/libpq.h"
+ #include "mb/pg_wchar.h"
+ #include "miscadmin.h"
+ #include "pgstat.h"
+@@ -1031,6 +1031,11 @@ process_startup_options(Port *port, bool am_superuser)
+ 
+ 		SetConfigOption(name, value, gucctx, PGC_S_CLIENT);
+ 	}
++
++	if (!gss_encrypt && port->hba->require_encrypt)
++		ereport(FATAL, (errcode(ERRCODE_INVALID_AUTHORIZATION_SPECIFICATION),
++						errmsg("GSSAPI encryption required from user \"%s\"",
++							   port->user_name)));
+ }
+ 
+ /*
+diff --git a/src/backend/utils/misc/guc.c b/src/backend/utils/misc/guc.c
+index 8cb9ceb..e69b184 100644
+--- a/src/backend/utils/misc/guc.c
++++ b/src/backend/utils/misc/guc.c
+@@ -203,6 +203,11 @@ static const char *show_unix_socket_permissions(void);
+ static const char *show_log_file_mode(void);
+ 
+ 
++#ifdef ENABLE_GSS
++static void assign_gss_encrypt(bool newval, void *extra);
++static bool check_gss_encrypt(bool *newval, void **extra, GucSource source);
++#endif
++
+ /*
+  * Options for enum values defined in this module.
+  *
+@@ -1511,6 +1516,15 @@ static struct config_bool ConfigureNamesBool[] =
+ 		NULL, NULL, NULL
+ 	},
+ 
++	{
++		{"gss_encrypt", PGC_USERSET, CONN_AUTH_SECURITY,
++		 gettext_noop("Whether client wants encryption for this connection."),
++		 NULL,
++		 GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE
++		},
++		&gss_encrypt, false, check_gss_encrypt, assign_gss_encrypt, NULL
++	},
++
+ 	/* End-of-list marker */
+ 	{
+ 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
+@@ -9502,4 +9516,19 @@ show_log_file_mode(void)
+ 	return buf;
+ }
+ 
++static void
++assign_gss_encrypt(bool newval, void *extra)
++{
++	gss_encrypt = newval;
++}
++
++static bool
++check_gss_encrypt(bool *newval, void **extra, GucSource source)
++{
++	if (MyProcPort && MyProcPort->hba && MyProcPort->hba->require_encrypt &&
++		!*newval)
++		return false;
++	return true;
++}
++
+ #include "guc-file.c"
+diff --git a/src/include/libpq/auth.h b/src/include/libpq/auth.h
+index ace647a..398f51d 100644
+--- a/src/include/libpq/auth.h
++++ b/src/include/libpq/auth.h
+@@ -26,4 +26,9 @@ extern void ClientAuthentication(Port *port);
+ typedef void (*ClientAuthentication_hook_type) (Port *, int);
+ extern PGDLLIMPORT ClientAuthentication_hook_type ClientAuthentication_hook;
+ 
++#ifdef ENABLE_GSS
++void pg_GSS_error(int severity, char *errmsg, OM_uint32 maj_stat,
++				  OM_uint32 min_stat);
++#endif
++
+ #endif   /* AUTH_H */
+diff --git a/src/include/libpq/hba.h b/src/include/libpq/hba.h
+index 68a953a..3435674 100644
+--- a/src/include/libpq/hba.h
++++ b/src/include/libpq/hba.h
+@@ -77,6 +77,7 @@ typedef struct HbaLine
+ 	bool		clientcert;
+ 	char	   *krb_realm;
+ 	bool		include_realm;
++	bool		require_encrypt;
+ 	char	   *radiusserver;
+ 	char	   *radiussecret;
+ 	char	   *radiusidentifier;
+diff --git a/src/include/libpq/libpq-be.h b/src/include/libpq/libpq-be.h
+index e78c565..7d2d4dc 100644
+--- a/src/include/libpq/libpq-be.h
++++ b/src/include/libpq/libpq-be.h
+@@ -30,6 +30,8 @@
+ #endif
+ 
+ #ifdef ENABLE_GSS
++#include "lib/stringinfo.h"
++
+ #if defined(HAVE_GSSAPI_H)
+ #include <gssapi.h>
+ #else
+@@ -196,6 +198,13 @@ typedef struct Port
+ } Port;
+ 
+ 
++#ifdef ENABLE_GSS
++/* These functions are implemented in be-secure-gss.c */
++extern size_t
++be_gss_encrypt(Port *port, char msgtype, const char **msgptr, size_t len);
++extern int be_gss_inplace_decrypt(StringInfo inBuf);
++#endif
++
+ extern ProtocolVersion FrontendProtocol;
+ 
+ /* TCP keepalives configuration. These are no-ops on an AF_UNIX socket. */
+diff --git a/src/include/libpq/libpq.h b/src/include/libpq/libpq.h
+index 9d216fa..86698bf 100644
+--- a/src/include/libpq/libpq.h
++++ b/src/include/libpq/libpq.h
+@@ -86,4 +86,8 @@ extern void secure_close(Port *port);
+ extern ssize_t secure_read(Port *port, void *ptr, size_t len);
+ extern ssize_t secure_write(Port *port, void *ptr, size_t len);
+ 
++#ifdef ENABLE_GSS
++extern bool gss_encrypt;
++#endif
++
+ #endif   /* LIBPQ_H */
+diff --git a/src/interfaces/libpq/Makefile b/src/interfaces/libpq/Makefile
+index 7fea343..b66a74b 100644
+--- a/src/interfaces/libpq/Makefile
++++ b/src/interfaces/libpq/Makefile
+@@ -44,6 +44,11 @@ OBJS += ip.o md5.o
+ # utils/mb
+ OBJS += encnames.o wchar.o
+ 
++
++ifeq ($(with_gssapi),yes)
++OBJS += fe-secure-gss.o
++endif
++
+ ifeq ($(PORTNAME), cygwin)
+ override shlib = cyg$(NAME)$(DLSUFFIX)
+ endif
+diff --git a/src/interfaces/libpq/fe-auth.c b/src/interfaces/libpq/fe-auth.c
+index c833a28..ff47380 100644
+--- a/src/interfaces/libpq/fe-auth.c
++++ b/src/interfaces/libpq/fe-auth.c
+@@ -82,7 +82,7 @@ pg_GSS_error_int(PQExpBuffer str, const char *mprefix,
+ /*
+  * GSSAPI errors contain two parts; put both into conn->errorMessage.
+  */
+-static void
++void
+ pg_GSS_error(const char *mprefix, PGconn *conn,
+ 			 OM_uint32 maj_stat, OM_uint32 min_stat)
+ {
+diff --git a/src/interfaces/libpq/fe-auth.h b/src/interfaces/libpq/fe-auth.h
+index 5a85476..290fd2e 100644
+--- a/src/interfaces/libpq/fe-auth.h
++++ b/src/interfaces/libpq/fe-auth.h
+@@ -21,4 +21,9 @@
+ extern int	pg_fe_sendauth(AuthRequest areq, PGconn *conn);
+ extern char *pg_fe_getauthname(PQExpBuffer errorMessage);
+ 
++#ifdef ENABLE_GSS
++void pg_GSS_error(const char *mprefix, PGconn *conn, OM_uint32 maj_stat,
++				  OM_uint32 min_stat);
++#endif
++
+ #endif   /* FE_AUTH_H */
+diff --git a/src/interfaces/libpq/fe-connect.c b/src/interfaces/libpq/fe-connect.c
+index c11ecae..27e2d21 100644
+--- a/src/interfaces/libpq/fe-connect.c
++++ b/src/interfaces/libpq/fe-connect.c
+@@ -91,8 +91,9 @@ static int ldapServiceLookup(const char *purl, PQconninfoOption *options,
+  * application_name in a startup packet.  We hard-wire the value rather
+  * than looking into errcodes.h since it reflects historical behavior
+  * rather than that of the current code.
++ * Servers that do not support GSS encryption will also return this error.
+  */
+-#define ERRCODE_APPNAME_UNKNOWN "42704"
++#define ERRCODE_UNKNOWN_PARAM "42704"
+ 
+ /* This is part of the protocol so just define it */
+ #define ERRCODE_INVALID_PASSWORD "28P01"
+@@ -296,6 +297,12 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
+ 	offsetof(struct pg_conn, gsslib)},
+ #endif
+ 
++#if defined(ENABLE_GSS)
++	{"gss_enc_require", "GSS_ENC_REQUIRE", "0", NULL,
++		"Require-GSS-encryption", "", 1, /* should be '0' or '1' */
++	offsetof(struct pg_conn, gss_enc_require)},
++#endif
++
+ 	{"replication", NULL, NULL, NULL,
+ 		"Replication", "D", 5,
+ 	offsetof(struct pg_conn, replication)},
+@@ -2512,6 +2519,11 @@ keep_going:						/* We will come back to here until there is
+ 					/* We are done with authentication exchange */
+ 					conn->status = CONNECTION_AUTH_OK;
+ 
++#ifdef ENABLE_GSS
++					if (conn->gctx != 0)
++						conn->gss_auth_done = true;
++#endif
++
+ 					/*
+ 					 * Set asyncStatus so that PQgetResult will think that
+ 					 * what comes back next is the result of a query.  See
+@@ -2552,6 +2564,37 @@ keep_going:						/* We will come back to here until there is
+ 					if (res->resultStatus != PGRES_FATAL_ERROR)
+ 						appendPQExpBufferStr(&conn->errorMessage,
+ 											 libpq_gettext("unexpected message from server during startup\n"));
++#ifdef ENABLE_GSS
++					else if (!conn->gss_disable_enc &&
++							 *conn->gss_enc_require != '1')
++					{
++						/*
++						 * We tried to request GSS encryption, but the server
++						 * doesn't support it.  Retries are permitted here, so
++						 * hang up and try again.  A connection that doesn't
++						 * support appname will also not support GSSAPI
++						 * encryption, so this check goes before that check.
++						 * See comment below.
++						 */
++						const char *sqlstate;
++
++						sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
++						if (sqlstate &&
++							strcmp(sqlstate, ERRCODE_UNKNOWN_PARAM) == 0)
++						{
++							OM_uint32 minor;
++
++							PQclear(res);
++							conn->gss_disable_enc = true;
++							/* Must drop the old connection */
++							pqDropConnection(conn);
++							conn->status = CONNECTION_NEEDED;
++							gss_delete_sec_context(&minor, &conn->gctx,
++												   GSS_C_NO_BUFFER);
++							goto keep_going;
++						}
++					}
++#endif
+ 					else if (conn->send_appname &&
+ 							 (conn->appname || conn->fbappname))
+ 					{
+@@ -2569,7 +2612,7 @@ keep_going:						/* We will come back to here until there is
+ 
+ 						sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+ 						if (sqlstate &&
+-							strcmp(sqlstate, ERRCODE_APPNAME_UNKNOWN) == 0)
++							strcmp(sqlstate, ERRCODE_UNKNOWN_PARAM) == 0)
+ 						{
+ 							PQclear(res);
+ 							conn->send_appname = false;
+@@ -2579,6 +2622,15 @@ keep_going:						/* We will come back to here until there is
+ 							goto keep_going;
+ 						}
+ 					}
++#ifdef ENABLE_GSS
++					else if (*conn->gss_enc_require == '1')
++						/*
++						 * It has been determined that appname was not the
++						 * cause of connection failure, so give up.
++						 */
++						appendPQExpBufferStr(&conn->errorMessage,
++											 libpq_gettext("Server does not support required GSS encryption\n"));
++#endif
+ 
+ 					/*
+ 					 * if the resultStatus is FATAL, then conn->errorMessage
+diff --git a/src/interfaces/libpq/fe-misc.c b/src/interfaces/libpq/fe-misc.c
+index 488841e..3acd3d0 100644
+--- a/src/interfaces/libpq/fe-misc.c
++++ b/src/interfaces/libpq/fe-misc.c
+@@ -604,6 +604,11 @@ pqPutMsgEnd(PGconn *conn)
+ 		memcpy(conn->outBuffer + conn->outMsgStart, &msgLen, 4);
+ 	}
+ 
++#ifdef ENABLE_GSS
++	if (pggss_encrypt(conn) < 0)
++		return EOF;
++#endif
++
+ 	/* Make message eligible to send */
+ 	conn->outCount = conn->outMsgEnd;
+ 
+diff --git a/src/interfaces/libpq/fe-protocol3.c b/src/interfaces/libpq/fe-protocol3.c
+index c514ca5..ccd94fd 100644
+--- a/src/interfaces/libpq/fe-protocol3.c
++++ b/src/interfaces/libpq/fe-protocol3.c
+@@ -129,6 +129,58 @@ pqParseInput3(PGconn *conn)
+ 			return;
+ 		}
+ 
++#ifdef ENABLE_GSS
++		/* We want to be ready in both IDLE and BUSY states for encryption */
++		if (id == 'g' && !conn->gss_disable_enc && conn->gctx)
++		{
++			ssize_t encEnd, next;
++
++			encEnd = pggss_inplace_decrypt(conn, msgLength);
++			if (encEnd <= 0)
++			{
++				/* error message placed by pggss_inplace_decrypt() */
++				pqSaveErrorResult(conn);
++				conn->asyncStatus = PGASYNC_READY;
++				pqDropConnection(conn);
++				conn->status = CONNECTION_BAD;
++				return;
++			}
++
++			/* shift contents of buffer to account for slack */
++			encEnd += conn->inStart;
++			next = conn->inStart + msgLength + 5;
++			memmove(conn->inBuffer + encEnd, conn->inBuffer + next,
++					conn->inEnd - next);
++			conn->inEnd = (conn->inEnd - next) + encEnd;
++
++			conn->inCursor = conn->inStart;
++			(void) pqGetc(&id, conn);
++			(void) pqGetInt(&msgLength, 4, conn);
++			msgLength -= 4;
++			if (msgLength != encEnd - conn->inCursor)
++			{
++				/* This isn't a sync error because decrypt was successful */
++				printfPQExpBuffer(&conn->errorMessage,
++								  libpq_gettext(
++									  "server lied about message length: got message length %ld, but expected legnth %d\n"),
++								  encEnd - conn->inCursor, msgLength);
++				/* build an error result holding the error message */
++				pqSaveErrorResult(conn);
++				/* drop out of GetResult wait loop */
++				conn->asyncStatus = PGASYNC_READY;
++
++				pqDropConnection(conn);
++				/* No more connection to backend */
++				conn->status = CONNECTION_BAD;
++			}
++			conn->gss_decrypted_cur = true;
++		}
++		else if (!conn->gss_disable_enc && conn->gss_auth_done &&
++				 !conn->gss_decrypted_cur && id != 'E')
++			/* This could be a sync error, so let's handle it as such. */
++			handleSyncLoss(conn, id, msgLength);
++#endif
++
+ 		/*
+ 		 * NOTIFY and NOTICE messages can happen in any state; always process
+ 		 * them right away.
+@@ -398,6 +450,9 @@ pqParseInput3(PGconn *conn)
+ 		{
+ 			/* Normal case: parsing agrees with specified length */
+ 			conn->inStart = conn->inCursor;
++#ifdef ENABLE_GSS
++			conn->gss_decrypted_cur = false;
++#endif
+ 		}
+ 		else
+ 		{
+@@ -2051,6 +2106,11 @@ build_startup_packet(const PGconn *conn, char *packet,
+ 	if (conn->client_encoding_initial && conn->client_encoding_initial[0])
+ 		ADD_STARTUP_OPTION("client_encoding", conn->client_encoding_initial);
+ 
++#ifdef ENABLE_GSS
++	if (!conn->gss_disable_enc)
++		ADD_STARTUP_OPTION("gss_encrypt", "on");
++#endif
++
+ 	/* Add any environment-driven GUC settings needed */
+ 	for (next_eo = options; next_eo->envName; next_eo++)
+ 	{
+diff --git a/src/interfaces/libpq/fe-secure-gss.c b/src/interfaces/libpq/fe-secure-gss.c
+new file mode 100644
+index 0000000..afea9c3
+--- /dev/null
++++ b/src/interfaces/libpq/fe-secure-gss.c
+@@ -0,0 +1,92 @@
++#include <assert.h>
++
++#include "libpq-fe.h"
++#include "postgres_fe.h"
++#include "fe-auth.h"
++#include "libpq-int.h"
++
++ssize_t
++pggss_inplace_decrypt(PGconn *conn, int gsslen)
++{
++	OM_uint32 major, minor;
++	gss_buffer_desc input, output;
++	ssize_t n;
++	int conf;
++
++	input.length = gsslen;
++	input.value = conn->inBuffer + conn->inCursor;
++	output.length = 0;
++	output.value = NULL;
++
++	major = gss_unwrap(&minor, conn->gctx, &input, &output, &conf, NULL);
++	if (GSS_ERROR(major))
++	{
++		pg_GSS_error("GSSAPI unwrap error", conn, major, minor);
++		return -1;
++	}
++	else if (conf == 0)
++	{
++		printfPQExpBuffer(&conn->errorMessage,
++						  libpq_gettext(
++							  "received GSSAPI message without confidentiality\n"));
++		return -1;
++	}
++
++	memcpy(conn->inBuffer + conn->inStart, output.value, output.length);
++	n = output.length;
++	gss_release_buffer(&minor, &output);
++	return n;
++}
++
++int
++pggss_encrypt(PGconn *conn)
++{
++	OM_uint32 major, minor;
++	gss_buffer_desc input, output;
++	int msgLen, conf;
++	uint32 len_n;
++
++	if (conn->gss_disable_enc || !conn->gctx || !conn->gss_auth_done)
++		return 0;
++	assert(conn->outMsgStart > 0);
++
++	/* We need to encrypt message type as well */
++	conn->outMsgStart -= 1;
++	msgLen = conn->outMsgEnd - conn->outMsgStart;
++
++	input.value = conn->outBuffer + conn->outMsgStart;
++	input.length = msgLen;
++	output.length = 0;
++	output.value = NULL;
++
++	major = gss_wrap(&minor, conn->gctx, 1, GSS_C_QOP_DEFAULT, &input, &conf,
++					 &output);
++	if (GSS_ERROR(major))
++	{
++		pg_GSS_error("GSSAPI wrap error", conn, major, minor);
++		return -1;
++	}
++	else if (conf == 0)
++	{
++		printfPQExpBuffer(&conn->errorMessage,
++						  libpq_gettext(
++							  "Failed to obtain confidentiality for outgoing GSSAPI message\n"));
++		return -1;
++	}
++
++	msgLen = output.length + 4;
++	if (pqCheckOutBufferSpace(conn->outMsgStart + msgLen + 1, conn))
++		return -1;
++	
++	conn->outBuffer[conn->outMsgStart] = 'g'; /* GSSAPI message */
++
++	len_n = htonl(msgLen);
++	memcpy(conn->outBuffer + conn->outMsgStart + 1, &len_n, 4);
++
++	memcpy(conn->outBuffer + conn->outMsgStart + 1 + 4,
++			 output.value, output.length);
++	conn->outMsgEnd = conn->outMsgStart + msgLen + 1;
++
++	gss_release_buffer(&minor, &output);
++	return msgLen + 1;
++}
+diff --git a/src/interfaces/libpq/libpq-int.h b/src/interfaces/libpq/libpq-int.h
+index 4aeb4fa..56f65b3 100644
+--- a/src/interfaces/libpq/libpq-int.h
++++ b/src/interfaces/libpq/libpq-int.h
+@@ -442,6 +442,10 @@ struct pg_conn
+ 	gss_name_t	gtarg_nam;		/* GSS target name */
+ 	gss_buffer_desc ginbuf;		/* GSS input token */
+ 	gss_buffer_desc goutbuf;	/* GSS output token */
++	bool gss_disable_enc;		/* Does server recognize gss_encrypt? */
++	bool gss_auth_done;			/* Did we finish the AUTH step? */
++	bool gss_decrypted_cur;		/* Is first message in buffer decrypted? */
++	char *gss_enc_require;		/* Can we downgrade to plaintext? */
+ #endif
+ 
+ #ifdef ENABLE_SSPI
+@@ -611,6 +615,12 @@ extern void pq_reset_sigpipe(sigset_t *osigset, bool sigpipe_pending,
+ #endif
+ 
+ /*
++ * GSSAPI encryption functions defined in fe-secure-gss.c
++ */
++extern ssize_t pggss_inplace_decrypt(PGconn *conn, int gsslen);
++extern int pggss_encrypt(PGconn *conn);
++
++/*
+  * this is so that we can check if a connection is non-blocking internally
+  * without the overhead of a function call
+  */
