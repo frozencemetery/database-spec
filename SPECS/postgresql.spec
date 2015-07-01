@@ -67,7 +67,7 @@ Summary: PostgreSQL client programs
 Name: postgresql
 %global majorversion 9.4
 Version: 9.4.4
-Release: 2%{?dist}
+Release: 3%{?dist}
 
 # The PostgreSQL license is very similar to other MIT licenses, but the OSI
 # recognizes it as an independent license, so we do as well.
@@ -123,6 +123,7 @@ BuildRequires: perl(ExtUtils::MakeMaker) glibc-devel bison flex gawk help2man
 BuildRequires: perl(ExtUtils::Embed), perl-devel
 BuildRequires: readline-devel zlib-devel
 BuildRequires: systemd-units
+BuildRequires: openjade
 
 %if %plpython
 BuildRequires: python-devel
@@ -1172,7 +1173,7 @@ fi
 %endif
 
 %changelog
-* Wed Jul 01 2015 Robbie Harwood <rharwood@redhat.com> - 9.4.4-2
+* Wed Jul 01 2015 Robbie Harwood <rharwood@redhat.com> - 9.4.4-3
 - Insert GSSAPI encryption for testing
 
 * Thu Jun 11 2015 Pavel Raiskup <praiskup@redhat.com> - 9.4.4-1
