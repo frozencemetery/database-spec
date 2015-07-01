@@ -67,7 +67,7 @@ Summary: PostgreSQL client programs
 Name: postgresql
 %global majorversion 9.4
 Version: 9.4.4
-Release: 3%{?dist}
+Release: 4%{?dist}
 
 # The PostgreSQL license is very similar to other MIT licenses, but the OSI
 # recognizes it as an independent license, so we do as well.
@@ -232,17 +232,17 @@ and run a PostgreSQL server, which will in turn allow you to create
 and maintain PostgreSQL databases.
 
 
-%package docs
-Summary: Extra documentation for PostgreSQL
-Group: Applications/Databases
-Requires: %{name}%{?_isa} = %{version}-%{release}
-# Just for more intuitive documentation installation
-Provides: %{name}-doc = %{version}-%{release}
+# %package docs
+# Summary: Extra documentation for PostgreSQL
+# Group: Applications/Databases
+# Requires: %{name}%{?_isa} = %{version}-%{release}
+# # Just for more intuitive documentation installation
+# Provides: %{name}-doc = %{version}-%{release}
 
-%description docs
-The postgresql-docs package contains some additional documentation for
-PostgreSQL.  Currently, this includes the main documentation in PDF format
-and source files for the PostgreSQL tutorial.
+# %description docs
+# The postgresql-docs package contains some additional documentation for
+# PostgreSQL.  Currently, this includes the main documentation in PDF format
+# and source files for the PostgreSQL tutorial.
 
 
 %package contrib
@@ -926,10 +926,10 @@ fi
 %{_mandir}/man1/vacuumdb.*
 %{_mandir}/man7/*
 
-%files docs
-%doc *-US.pdf
-%doc doc/html
-%{_libdir}/pgsql/tutorial/
+# %files docs
+# %doc *-US.pdf
+# %doc doc/html
+# %{_libdir}/pgsql/tutorial/
 
 %files contrib
 %doc contrib/spi/*.example
@@ -1173,7 +1173,7 @@ fi
 %endif
 
 %changelog
-* Wed Jul 01 2015 Robbie Harwood <rharwood@redhat.com> - 9.4.4-3
+* Wed Jul 01 2015 Robbie Harwood <rharwood@redhat.com> - 9.4.4-4
 - Insert GSSAPI encryption for testing
 
 * Thu Jun 11 2015 Pavel Raiskup <praiskup@redhat.com> - 9.4.4-1
