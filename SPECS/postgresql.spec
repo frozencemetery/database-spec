@@ -67,7 +67,7 @@ Summary: PostgreSQL client programs
 Name: postgresql
 %global majorversion 9.4
 Version: 9.4.4
-Release: 4%{?dist}
+Release: 5%{?dist}
 
 # The PostgreSQL license is very similar to other MIT licenses, but the OSI
 # recognizes it as an independent license, so we do as well.
@@ -552,6 +552,7 @@ unset PYTHON
 	--with-system-tzdata=/usr/share/zoneinfo \
 	--datadir=/usr/share/pgsql
 
+rm -rf doc
 make %{?_smp_mflags} world
 
 # Have to hack makefile to put correct path into tutorial scripts
@@ -1173,7 +1174,7 @@ fi
 %endif
 
 %changelog
-* Wed Jul 01 2015 Robbie Harwood <rharwood@redhat.com> - 9.4.4-4
+* Wed Jul 01 2015 Robbie Harwood <rharwood@redhat.com> - 9.4.4-5
 - Insert GSSAPI encryption for testing
 
 * Thu Jun 11 2015 Pavel Raiskup <praiskup@redhat.com> - 9.4.4-1
