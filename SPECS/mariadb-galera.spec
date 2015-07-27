@@ -7,7 +7,7 @@
 
 Name: mariadb-galera
 Version: 5.5.42
-Release: 1%{?dist}
+Release: 2%{?dist}
 Epoch: 1
 
 Summary: A community developed branch of MySQL
@@ -24,7 +24,7 @@ License: GPLv2 with exceptions and LGPLv2 and BSD
 %global obsoleted_mysql_case_evr 5.5.30-5
 
 # Regression tests take a long time, you can skip 'em with this
-%{!?runselftest:%global runselftest 1}
+%{!?runselftest:%global runselftest 0}
 
 # When replacing mysql by mariadb these packages are not upated, but rather
 # installed and uninstalled. Thus we loose information about mysqld service
@@ -75,6 +75,7 @@ Patch21: mariadb-sharedir.patch
 Patch22: mariadb-major.patch
 Patch23: mariadb-install-db-path.patch
 Patch24: mariadb-fix-sed-expr.patch
+Patch99: mariadb-krb5.patch
 
 BuildRequires: perl, readline-devel, openssl-devel
 BuildRequires: cmake, ncurses-devel, zlib-devel, libaio-devel
@@ -301,6 +302,8 @@ MariaDB is a community developed branch of MySQL.
 %patch22 -p1
 %patch23 -p1
 %patch24 -p1
+
+%patch99 -p1
 
 # workaround for upstream bug #56342
 rm -f mysql-test/t/ssl_8k_key-master.opt
@@ -954,6 +957,10 @@ fi
 # %{_mandir}/man1/mysql_client_test.1*
 
 %changelog
+* Mon Jul 27 2015 Robbie Harwood <rharwood@redhat.com> - 1:5.5.42-2
+- Disable selftest for COPR
+- Include GSSAPI patches
+
 * Mon Jul 6 2015 Mike Bayer <mbayer@redhat.com> - 1:5.5.42-1
 - Rebase to 5.5.42
   https://mariadb.com/kb/en/mariadb/mariadb-galera-cluster-5542-release-notes/  

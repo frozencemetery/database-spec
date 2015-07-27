@@ -1,0 +1,1724 @@
+diff --git a/mysql-test/suite/plugins/r/kerberos.result b/mysql-test/suite/plugins/r/kerberos.result
+new file mode 100644
+index 0000000..6b610e1
+--- /dev/null
++++ b/mysql-test/suite/plugins/r/kerberos.result
+@@ -0,0 +1,12 @@
++INSTALL PLUGIN kerberos SONAME 'kerberos';
++CREATE USER test_kerberos IDENTIFIED VIA kerberos AS 'MTR_KERBEROS_UPN';
++SET GLOBAL kerberos_principal_name='MTR_KERBEROS_SPN';
++#
++# user principal is accepted, and authentication is successful.
++#
++SELECT USER();
++USER()
++test_kerberos@localhost
++# connection is persistent.
++DROP USER test_kerberos;
++UNINSTALL PLUGIN kerberos;
+diff --git a/mysql-test/suite/plugins/t/kerberos.test b/mysql-test/suite/plugins/t/kerberos.test
+new file mode 100755
+index 0000000..7d4650c
+--- /dev/null
++++ b/mysql-test/suite/plugins/t/kerberos.test
+@@ -0,0 +1,30 @@
++
++--source include/not_embedded.inc
++
++if (!$MTR_KERBEROS_ENABLED) {
++  skip No Kerberos auth plugin;
++}
++
++eval INSTALL PLUGIN kerberos SONAME 'kerberos';
++--replace_result $MTR_KERBEROS_UPN MTR_KERBEROS_UPN
++eval CREATE USER test_kerberos IDENTIFIED VIA kerberos AS '$MTR_KERBEROS_UPN';
++
++--replace_result $MTR_KERBEROS_SPN MTR_KERBEROS_SPN
++eval SET GLOBAL kerberos_principal_name='$MTR_KERBEROS_SPN';
++
++let $plugindir=`SELECT @@global.plugin_dir`;
++
++--echo #
++--echo # user principal is accepted, and authentication is successful.
++--echo #
++--exec echo "SELECT USER();" | $MYSQL_TEST -u test_kerberos --plugin-dir=$plugindir
++--echo # connection is persistent.
++
++# --echo #
++# --echo # athentication is unsuccessful
++# --echo #
++# --error 1
++# --exec $MYSQL_TEST -u test_kerberos --plugin-dir=$plugindir
++
++DROP USER test_kerberos;
++UNINSTALL PLUGIN kerberos;
+diff --git a/mysys/charset.c b/mysys/charset.c
+old mode 100644
+new mode 100755
+diff --git a/plugin/auth_kerberos/CMakeLists.txt b/plugin/auth_kerberos/CMakeLists.txt
+new file mode 100644
+index 0000000..e762872
+--- /dev/null
++++ b/plugin/auth_kerberos/CMakeLists.txt
+@@ -0,0 +1,24 @@
++IF (WIN32)
++    # on Windows-platform, secur32.lib is certainly there.
++    SET(KRB_LIB secur32)
++ELSE (WIN32)
++    # check include file
++    CHECK_INCLUDE_FILES("gssapi/gssapi.h;gssapi/gssapi_generic.h;gssapi/gssapi_krb5.h" HAVE_GSSAPI_H)
++    IF (NOT HAVE_GSSAPI_H)
++        RETURN()
++    ENDIF (NOT HAVE_GSSAPI_H)
++    # on non-Windows-platform, check the existence of library gssapi_krb5.
++    FIND_LIBRARY(KRB_LIB gssapi_krb5)
++    IF (NOT KRB_LIB)
++        # library is not there on the PATH.
++        message("gssapi_krb5 not found.")
++        RETURN()
++    ENDIF (NOT KRB_LIB)
++ENDIF (WIN32)
++
++MYSQL_ADD_PLUGIN(kerberos kerberos_server.c kerberos_common.c
++                 LINK_LIBRARIES ${KRB_LIB}
++                 MODULE_ONLY COMPONENT SharedLibraries)
++MYSQL_ADD_PLUGIN(kerberos_client kerberos_client.c kerberos_common.c
++                 LINK_LIBRARIES ${KRB_LIB}
++                 MODULE_ONLY COMPONENT SharedLibraries)
+diff --git a/plugin/auth_kerberos/README.md b/plugin/auth_kerberos/README.md
+new file mode 100644
+index 0000000..7caa9a6
+--- /dev/null
++++ b/plugin/auth_kerberos/README.md
+@@ -0,0 +1,211 @@
++## Kerberos Authentication Plugin for MariaDB
++
++This article gives instructions on configuring Kerberos authentication
++plugin for MariaDB.  With Kerberos authentication plugin enabled, you can
++login MariaDB as a Kerberos domain user passwordlessly.
++
++### System Settings
++
++To use the full feature of Kerberos authentication plugin, make sure a
++Kerberos authentication domain is properly set up.
++
++* For a pure *nix Kerberos domain, an [MIT Kerberos Key Distribution Centre][1]
++(krb5kdc service) should be running.
++
++* As to a pure Windows domain, an active directory domain controller should
++be connectable.
++
++* Hybrid Kerberos domains are also allowed.
++
++Detailed guides to set up a Kerberos authentication domain is beyond the scope
++of this document.  You can refer to the links in the References section on
++how to setup a Kerberos authentication domain.
++
++### Compile
++
++The compilation of Kerberos authentication plugin has been integrated into
++the CMake building framework of MariaDB.
++
++##### *nix
++
++If you are a *nix user, guarantee the Kerberos libraries and headers are
++installed.
++
++##### Windows
++
++The Windows version requires no additional libraries.
++
++The Kerberos authentication plugin is separated into two isolated parts:
++the server-side plugin and client-side plugin.  If no errors occur
++during compilation, two shared libraries will be created, `kerberos` and
++`kerberos_client` for server-side and client-side plugin respectively.
++
++### Installation
++
++Install the server-side Kerberos authentication plugin before used.
++Client-side plugin will be automatically loaded when required.
++
++Connect MariaDB server as a superuser, then issue the command
++
++    INSTALL PLUGIN kerberos SONAME 'kerberos';
++
++This will instruct MariaDB server to load the Kerberos authentication plugin.
++
++### Set a Service Principal Name to MariaDB
++
++Before we can authenticate against Kerberos service, the last step is assign
++a service principal name to MariaDB server.
++
++#### Figure out a Valid Principal Name
++
++Services and users are identified via principal names internally in Kerberos
++authentication service.  Generally, a principal name is in the format of
++`username/hostname@DOMAIN.NAME`.
++
++##### *nix
++
++For Kerberos services on *nix platform, a user specified service principal
++name is required, since no default principal name can be derived from the
++effective user of the server process.
++
++##### Windows
++
++As to Windows Active Directory services
++
++* if MariaDB is running as `NetworkService` by default, the principal name
++is akin `host$@DOMAIN.NAME`.  In this case, no need to specify service
++principal name manually.  The Kerberos plugin can derive a valid default
++service principal name.
++
++* Otherwise, if you run MariaDB as a customized domain user, the principal
++name is `username@DOMAIN.NAME` by default.  In this case, no need to specify
++service principal name manually.  The Kerberos plugin can derive a valid
++default service principal name.
++
++* Finally, if a principal name is preferred over the default `username@DOMAIN`,
++feel free to update it with the `setspn.exe` tool.  Correspondingly, the
++new principal name must be specified in the MariaDB configuration file to
++have it work.
++
++A valid Kerberos principal name is case sensitive in both *nix and Windows.
++For example, on *nix platform a valid service principal name is like
++`MySQL/localhost@EXAMPLE.COM` (capitalised realm name is recommended by
++Kerberos service) or `MySQL@EXAMPLE.COM` on Windows (`hostname` is not
++emphasised).
++
++#### Assign the Principal Name
++
++To assign a service principal name to server, Kerberos authentication plugin
++exposes a system variable `named kerberos_principal_name`.
++
++One can specify the name (say, `MySQL/localhost@EXAMPLE.COM`) in three ways:
++
++* Specify the name in configure file: edit local configure file ~/.my.cnf by
++inserting the line `kerberos_principal_name=MySQL/localhost@EXAMPLE.COM` in the
++server section.  * Pass as command line parameter: start MariaDB server with
++command line parameter `--kerberos_principal_name=MySQL/localhost@EXAMPLE.COM`.
++* If you can login MariaDB as a superuser, you can set by the following
++commands: `SET GLOBAL kerberos_principal_name='MySQL/localhost@EXAMPLE.COM';`
++The parameter should be set each time after the service restarts.
++
++You can verify service principal name is properly set by
++
++    SELECT @@global.kerberos_principal_name;
++
++#### Create New MariaDB Users
++
++If all the steps above are completed, you can now create a new user identified
++via Kerberos authentication plugin.
++
++    CREATE USER user_name IDENTIFIED VIA kerberos AS 'user_principal_name';
++
++We need the `AS` clause to specify the principal name instead of embedded
++into `user_name` directly for the length gap between MariaDB username and
++Kerberos principal name.
++
++#### Connect and Login as Kerboers Principal
++
++To connect to MariaDB as `user_name`, first check a valid Kerberos tgt ticket
++is cached with `klist`.  You can obtain a tgt ticket either by login as a
++domain user on Windows platform or by `kinit principal_name` on Linux box.
++
++If all these steps are done, you should now connect to MariaDB as `user_name`
++successfully.
++
++### Run Test Suite
++
++This section describes how to run unit test for Kerberos authentication plugin.
++In case of setting up a Kerberos domain, which is tedious to an ordinary user,
++the unit test for Kerberos authentication plugin is by default skipped.
++
++To run the unit test, an OS environment variable `MTR_KERBEROS_ENABLED`
++should be set to a valid value
++
++    MTR_KERBEROS_ENABLED=1
++
++Two more OS environment variables `MTR_KERBEROS_SPN` and `MTR_KERBEROS_UPN`
++should be set for MariaDB service principal name and login user principal
++name respectively.
++
++#### Extending the Ticket Lifetime
++
++Make sure the tgt ticket is not expired for login user when running the
++unit test.  In case early expiration of the ticket, we can extend the ticket
++lifetime in configuration.
++
++##### *nix
++
++You can extend the ticket lifetime by editing `/etc/krb5.conf` in *nix by
++updating two parameter `ticket_lifetime` and `renew_lifetime`.
++
++##### Windows
++
++Extending ticket lifetime can also be done within several clicks in Windows,
++here is a step-by-step instruction:
++
++  1. Open "Group Policy Management" (Start -> All Programs -> Administrative
++  Tools -> Group Policy Management).  2. Select default domain (Domains
++  -> default.domain -> Domain Controllers -> Default Domain Controllers;
++  then on the right detail panel Settings -> Policies -> Windows Settings
++  -> Security Settings -> right click "Local Policies/Security Options"
++  -> Edit... to open Group Policy Management Editor).  3. Then in the GPM
++  Editor Default Domain Controllers Policy -> Computer Configure -> Polices
++  -> Windows Settings -> Security Settings -> Account Policies -> Kerberos
++  Policies -> Maximum lifetime for service/user ticket.
++
++Once the tgt ticket is expired, on Linux use command `kinit -R` to renew
++the ticket, while on Windows, one should logout and logon again.
++
++### Trouble Shoot Authentication Problems
++
++  1. Check the Kerberos KDC log first, on Linux it is `/var/log/krb5kdc.log`
++  by default or specified in /etc/krb5.conf.  On Windows, steps are: Start
++  -> Administrative Tools -> Event Viewer, Windows Logs -> Security, to see
++  whether the ticket to requested service has been issued. If not issued,
++  verify whether both service principal name and user principal name are
++  correct. In addition, corresponding principals have been created in the
++  KDC server.  2. If tickets are issued, while authentication still fails
++  and you're on *nix box, make sure the initial credential to the service
++  principal's ticket is saved in the keytab. What's more, the keytab can be
++  read by Kerberos KDC.
++
++### References
++
++* [MIT Kerberos Official Documents for Administrators][2]
++* [A Step-by-step Guide for Windows Server 2008 Domain Controller and DNS Setup][3]
++* [Add Windows Box to a *nix krb5kdc Domain][5]
++* [Authenticate Linux Clients with Active Directory][6]
++* [Install Plugin in MariaDB][7]
++* [Kerberos Principal Name Specification][8]
++* [Renew a ticket on Windows][9]
++* [\*nix krenew command: Extend Ticket Lifetime on \*nix][10]
++
++[1]: http://web.mit.edu/kerberos/
++[2]: http://web.mit.edu/kerberos/krb5-latest/doc/admin/index.html
++[3]: http://www.windowsreference.com/windows-server-2008/step-by-step-guide-for-windows-server-2008-domain-controller-and-dns-server-setup/
++[5]: http://social.technet.microsoft.com/wiki/contents/articles/2751.kerberos-interoperability-step-by-step-guide-for-windows-server-2003.aspx#Using_an_MIT_KDC_with_a_Stand-alone_Windows_Server_TwentyOhThree_Client
++[6]: http://technet.microsoft.com/en-us/magazine/2008.12.linux.aspx
++[7]: https://kb.askmonty.org/en/plugin-overview/#installing-plugins
++[8]: http://pic.dhe.ibm.com/infocenter/iseries/v6r1m0/index.jsp?topic=/cl/addkrbtkt.htm
++[9]: http://technet.microsoft.com/en-us/library/cc738673(v=ws.10).aspx#w2k8tr_kerb_tools_iybi
++[10]: http://stackoverflow.com/questions/14682153/lifetime-of-kerberos-tickets#15457265
+diff --git a/plugin/auth_kerberos/kerberos_client.c b/plugin/auth_kerberos/kerberos_client.c
+new file mode 100644
+index 0000000..f088389
+--- /dev/null
++++ b/plugin/auth_kerberos/kerberos_client.c
+@@ -0,0 +1,408 @@
++/* Copyright (C) 2013 Shuang Qiu and Monty Program Ab
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++/**
++  @file
++
++  Kerberos server authentication plugin
++
++  kerberos_server is a general purpose server authentication plugin, it
++  authenticates user against Kerberos principal.
++
++  This is the client side implementation.
++*/
++#include <stdarg.h>
++#include <mysqld_error.h>
++#include <mysql/client_plugin.h>
++#include "kerberos_common.h"
++
++#define KERBEROS_UNKNOWN_ERROR      "HY000"
++#define KERBEROS_OUTOFMEMORY_ERROR  "HY001"
++#define KERBEROS_NET_ERROR_ON_WRITE "08S01"
++#define KERBEROS_NET_READ_ERROR     "08S01"
++
++/**
++ * set client error message
++ */
++static void set_krb_client_auth_error(MYSQL *, int, const char *, const char *, ...);
++
++#ifdef _WIN32
++static int sspi_kerberos_auth_client(const char *spn, MYSQL *mysql,
++        MYSQL_PLUGIN_VIO *vio)
++{
++  int read_len= 0;
++  int max_token_sz= SSPI_MAX_TOKEN_SIZE;
++  int ret= 0;                /* return code */
++  const char *err_msg= NULL;
++  /* SSPI related */
++  BOOL      have_ctxt= FALSE;
++  BOOL      have_cred= FALSE;
++  BOOL      have_input= FALSE;
++  BOOL      context_established= FALSE;
++  ULONG     attribs= 0;
++  TimeStamp lifetime;
++
++  SECURITY_STATUS ss;
++  CredHandle    cred_handle;                  /* credential handle */
++  CtxtHandle    ctxt_handle;                  /* security context */
++
++  SecPkgInfo   *sec_pkg_info;                 /* package information */
++  SecBufferDesc input_buf_desc;
++  SecBuffer     input_buf;
++  SecBufferDesc output_buf_desc;
++  SecBuffer     output_buf;
++  PBYTE         output_con;
++
++  /* query package information */
++  ss= QuerySecurityPackageInfo(SECURITY_PACKAGE_NAME, &sec_pkg_info);
++  if (ss == SEC_E_OK)
++  {
++    max_token_sz= sec_pkg_info->cbMaxToken;
++  }
++
++  /* allocate memory */
++  output_con= (PBYTE) calloc(max_token_sz, sizeof(BYTE));
++  if (!output_con)
++  {
++    set_krb_client_auth_error(mysql, ER_OUTOFMEMORY, \
++        KERBEROS_OUTOFMEMORY_ERROR, \
++        "Kerberos: insufficient memory to allocate for output token buffer.");
++    return CR_ERROR;
++  }
++
++  /* acquire credentials */
++  ss= AcquireCredentialsHandle(
++              NULL,
++              SECURITY_PACKAGE_NAME,
++              SECPKG_CRED_OUTBOUND,
++              NULL,
++              NULL,
++              NULL,
++              NULL,
++              &cred_handle,
++              &lifetime);
++  if (SEC_ERROR(ss))
++  {
++    err_msg= error_msg(ss);
++    set_krb_client_auth_error(mysql, ER_UNKNOWN_ERROR,
++        KERBEROS_UNKNOWN_ERROR, err_msg);
++    return CR_ERROR;
++  }
++  else
++  {
++    have_cred= TRUE;
++  }
++
++  /* prepare input buffer */
++  input_buf_desc.ulVersion= SECBUFFER_VERSION;
++  input_buf_desc.cBuffers= 1;
++  input_buf_desc.pBuffers= &input_buf;
++  input_buf.BufferType= SECBUFFER_TOKEN;
++  input_buf.cbBuffer= 0;
++  input_buf.pvBuffer= NULL;
++
++  /* prepare output buffer */
++  output_buf_desc.ulVersion= SECBUFFER_VERSION;
++  output_buf_desc.cBuffers= 1;
++  output_buf_desc.pBuffers= &output_buf;
++
++  output_buf.BufferType= SECBUFFER_TOKEN;
++  output_buf.cbBuffer= max_token_sz;
++  output_buf.pvBuffer= output_con;
++
++  do
++  {
++    ss= InitializeSecurityContext(
++            &cred_handle,                /* credential handle */
++            have_ctxt?&ctxt_handle:NULL, /* context handle */
++            (SEC_CHAR *) spn,            /* target principal name */
++            0,                           /* no special attributes req-ed*/
++            0,                           /* reserved */
++            SECURITY_NATIVE_DREP,
++            have_input ? &input_buf_desc : NULL,
++            0,                           /* reserved */
++            &ctxt_handle,
++            &output_buf_desc,
++            &attribs,
++            &lifetime);
++    /* reset used flag */
++    have_input= FALSE;
++
++    if (output_buf.cbBuffer)
++    {
++      /* send credential to server */
++      if (vio->write_packet(vio,
++            (const unsigned char *) output_buf.pvBuffer,
++            output_buf.cbBuffer))
++      {
++        ret= CR_ERROR;
++        set_krb_client_auth_error(mysql, ER_NET_ERROR_ON_WRITE,
++            KERBEROS_NET_ERROR_ON_WRITE,
++            "Kerberos: fail send credentials to server.");
++        goto cleanup;
++      }
++    }
++
++    if (SEC_ERROR(ss))
++    {
++      err_msg= error_msg(ss);
++      ret= CR_ERROR;
++      set_krb_client_auth_error(mysql, ER_UNKNOWN_ERROR,
++          KERBEROS_UNKNOWN_ERROR, err_msg);
++      goto cleanup;
++    }
++
++    have_ctxt= TRUE;
++
++    if ((ss == SEC_I_COMPLETE_NEEDED) ||
++            (ss == SEC_I_COMPLETE_AND_CONTINUE))
++    {
++      ss= CompleteAuthToken(&ctxt_handle, &output_buf_desc);
++
++      if (SEC_ERROR(ss))
++      {
++        err_msg= error_msg(ss);
++        ret= CR_ERROR;
++        set_krb_client_auth_error(mysql, ER_UNKNOWN_ERROR,
++            KERBEROS_UNKNOWN_ERROR, err_msg);
++        goto cleanup;
++      }
++    }
++
++    context_established= !((ss == SEC_I_CONTINUE_NEEDED) ||
++                            (ss == SEC_I_COMPLETE_AND_CONTINUE));
++    if (!context_established)
++    {
++      read_len= vio->read_packet(vio, (unsigned char **) &input_buf.pvBuffer);
++      if (read_len < 0)
++      {
++        ret= CR_ERROR;
++        set_krb_client_auth_error(mysql, ER_NET_READ_ERROR,
++            KERBEROS_NET_READ_ERROR,
++            "Kerberos: fail to read credential from server.");
++        goto cleanup;
++      }
++      else
++      {
++        input_buf.cbBuffer= read_len;
++        have_input= TRUE;
++      }
++    }
++
++    output_buf.cbBuffer= max_token_sz;
++  } while (!context_established);
++
++  ret= CR_OK;
++
++cleanup:
++  /* free dynamic memory */
++  if (have_ctxt) DeleteSecurityContext(&ctxt_handle);
++  free(output_con);
++  ss= FreeContextBuffer(sec_pkg_info);
++  if (ss != SEC_E_OK)
++  {
++    set_krb_client_auth_error(mysql, ER_UNKNOWN_ERROR,
++        KERBEROS_UNKNOWN_ERROR,
++        "Kerberos: fail to free SecurityPackageInfo object.");
++  }
++
++  return ret;
++}
++#else  /* !_WIN32 */
++static int gssapi_kerberos_auth_client(const char *spn, MYSQL *mysql,
++        MYSQL_PLUGIN_VIO *vio)
++{
++  int r_len= 0;                                 /* packet read length */
++  int context_established= 0;                   /* indicate ctxt avail */
++  int rc= CR_OK;
++  int have_cred= FALSE;
++  int have_ctxt= FALSE;
++  int have_name= FALSE;
++  const char *err_msg= NULL;
++  /* GSSAPI related fields */
++  OM_uint32 major= 0, minor= 0;
++  gss_name_t    service_name;
++  gss_ctx_id_t  ctxt;
++  gss_cred_id_t cred= GSS_C_NO_CREDENTIAL;    /* use default credential */
++  gss_buffer_desc spn_buf, input, output;
++
++  /* import principal from plain text */
++  /* initialize plain text service principal name */
++  spn_buf.length= strlen(spn);
++  spn_buf.value= (void *) spn;
++  /* import service principal */
++  major= gss_import_name(&minor,
++                         &spn_buf,
++                         (gss_OID) gss_nt_user_name,
++                         &service_name);
++  /* gss_import_name error checking */
++  if (GSS_ERROR(major))
++  {
++    err_msg= error_msg(major, minor);
++    rc= CR_ERROR;
++    set_krb_client_auth_error(mysql, ER_UNKNOWN_ERROR,
++        KERBEROS_UNKNOWN_ERROR, err_msg);
++    goto cleanup;
++  }
++  have_name= TRUE;
++
++  /* initial context */
++  ctxt= GSS_C_NO_CONTEXT;
++  input.length= 0;
++  input.value= NULL;
++
++  while (!context_established)
++  {
++    major= gss_init_sec_context(&minor,
++                                cred,
++                                &ctxt,
++                                service_name,
++                                GSS_C_NO_OID,   /* for an impl-spec mech */
++                                0,              /* no flags requested */
++                                0,              /* request default time */
++                                GSS_C_NO_CHANNEL_BINDINGS,
++                                &input,         /* token input */
++                                NULL,           /* actual mech */
++                                &output,        /* token output */
++                                NULL,           /* actual flags */
++                                NULL);          /* actual valid time */
++  
++    if (output.length)
++    {
++      /* send credential */
++      if (vio->write_packet(vio, output.value, output.length))
++      {
++        gss_release_buffer(&minor, &output);
++        rc= CR_ERROR;
++        set_krb_client_auth_error(mysql, ER_NET_ERROR_ON_WRITE,
++            KERBEROS_NET_ERROR_ON_WRITE,
++            "Kerberos: fail to send credential to server.");
++        goto cleanup;
++      }
++      gss_release_buffer(&minor, &output);
++    }
++
++    if (GSS_ERROR(major))
++    {
++      /* fatal error */
++      if (ctxt != GSS_C_NO_CONTEXT)
++      {
++        gss_delete_sec_context(&minor,
++                               &ctxt,
++                               GSS_C_NO_BUFFER);
++      }
++      err_msg= error_msg(major, minor);
++      rc= CR_ERROR;
++      set_krb_client_auth_error(mysql, ER_UNKNOWN_ERROR,
++          KERBEROS_UNKNOWN_ERROR, err_msg);
++      goto cleanup;
++    }
++
++    if (major & GSS_S_CONTINUE_NEEDED)
++    {
++      r_len= vio->read_packet(vio, (unsigned char **) &input.value);
++      if (r_len < 0)
++      {
++        rc= CR_ERROR;
++        set_krb_client_auth_error(mysql, ER_NET_READ_ERROR,
++            KERBEROS_NET_READ_ERROR,
++            "Error read credential packet from server.");
++        goto cleanup;
++      }
++    }
++    else
++    {
++      context_established= 1;
++    }
++  }
++
++cleanup:
++  if (have_name) gss_release_name(&minor, &service_name);
++  if (have_ctxt) gss_delete_sec_context(&minor, &ctxt, GSS_C_NO_BUFFER);
++  if (have_cred) gss_release_cred(&minor, &cred);
++
++  return rc;
++}
++#endif /* _WIN32 */
++
++/**
++ * The main client function of the Kerberos plugin.
++ */
++static int kerberos_auth_client(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql)
++{
++  int r_len= 0;
++  int rc= CR_OK;
++  /* service principal name */
++  char *spn= NULL;
++  char *spn_buff= (char *) malloc(PRINCIPAL_NAME_LEN);
++
++  /* read from server for service principal name */
++  r_len= vio->read_packet(vio, (unsigned char **) &spn);
++  if (r_len < 0)
++  {
++    set_krb_client_auth_error(mysql, ER_NET_READ_ERROR,
++        KERBEROS_NET_READ_ERROR,
++        "Kerberos: fail to read service principal name.");
++
++    return CR_ERROR;
++  }
++  strncpy(spn_buff, spn, PRINCIPAL_NAME_LEN);
++
++  rc =
++#ifdef _WIN32
++       sspi_kerberos_auth_client((const char *) spn_buff, mysql, vio);
++#else  /* !_WIN32 */
++       gssapi_kerberos_auth_client((const char *) spn_buff, mysql, vio);
++#endif /* _WIN32 */
++
++  free(spn_buff);
++  return rc;
++}
++
++/**
++ * set client error message.
++ * Param:
++ *  mysql    connection handle
++ *  errno    extended error number
++ *  format   error message template
++ *  ...      variable argument list
++ */
++static void set_krb_client_auth_error(MYSQL *mysql, int errcode,
++            const char *sqlstate, const char *format, ...)
++{
++  NET *net= &mysql->net;
++  va_list args;
++
++  net->last_errno= errcode;
++  va_start(args, format);
++  vsnprintf(net->last_error, sizeof(net->last_error) - 1,
++          format, args);
++  va_end(args);
++  memcpy(net->sqlstate, sqlstate, sizeof(net->sqlstate));
++}
++
++/* register client plugin */
++mysql_declare_client_plugin(AUTHENTICATION)
++  "kerberos_client",
++  "Shuang Qiu",
++  "Kerberos based authentication",
++  {0, 1, 0},
++  "GPL",
++  NULL,
++  NULL,
++  NULL,
++  NULL,
++  kerberos_auth_client
++mysql_end_client_plugin;
+diff --git a/plugin/auth_kerberos/kerberos_common.c b/plugin/auth_kerberos/kerberos_common.c
+new file mode 100644
+index 0000000..e5f3842
+--- /dev/null
++++ b/plugin/auth_kerberos/kerberos_common.c
+@@ -0,0 +1,141 @@
++/* Copyright (C) 2013 Shuang Qiu and Monty Program Ab
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++/**
++  @file
++
++  Kerberos authentication utilities
++
++  Utility functions are defined.
++*/
++#include "kerberos_common.h"
++
++#ifdef _WIN32
++/* translate status code to error message */
++const char *error_msg(SECURITY_STATUS ss)
++{
++  const char *err_msg= NULL;
++
++  switch (ss)
++  {
++  case SEC_E_INSUFFICIENT_MEMORY:
++    err_msg= "Kerberos: insufficient memory to complete the request.";
++    break;
++  case SEC_E_INTERNAL_ERROR:
++    err_msg= "Kerberos: an internal error occurs.";
++    break;
++  case SEC_E_NO_CREDENTIALS:
++    err_msg= "Kerberos: no credentials are available.";
++    break;
++  case SEC_E_NOT_OWNER:
++    err_msg= "Kerberos: necessary credentials to "
++             "acquire the new credential are not found.";
++    break;
++  case SEC_E_UNKNOWN_CREDENTIALS:
++    err_msg= "Kerberos: credentials supplied were not recognized.";
++    break;
++  case SEC_E_INVALID_HANDLE:
++    err_msg= "Kerberos: an invalid handle is provided.";
++    break;
++  case SEC_E_INVALID_TOKEN:
++    err_msg= "Kerberos: an invalid token is provided.";
++    break;
++  case SEC_E_LOGON_DENIED:
++    err_msg= "Kerberos: logon as specified principal failed.";
++    break;
++  case SEC_E_NO_AUTHENTICATING_AUTHORITY:
++    err_msg= "Kerberos: the domain name is invalid.";
++    break;
++  case SEC_E_TARGET_UNKNOWN:
++    err_msg= "Kerberos: the target principal is unknown.";
++    break;
++  case SEC_E_WRONG_PRINCIPAL:
++    err_msg= "Kerberos: the target principle does not "
++             "match with expected one.";
++    break;
++  case SEC_E_TIME_SKEW:
++    err_msg= "Kerberos: a time skew is detected.";
++    break;
++  default:
++    err_msg = "Kerberos: unknown error.";
++    break;
++  }
++
++  return err_msg;
++}
++#else  /* _WIN32 */
++#define ERR_MSG_BUF_LEN  1024
++static char err_msg_buf[ERR_MSG_BUF_LEN];
++
++const char *error_msg(OM_uint32 major, OM_uint32 minor __attribute__((unused)))
++{
++  const char *err_msg= NULL;
++
++  switch (major)
++  {
++  case GSS_S_BAD_NAMETYPE:
++  case GSS_S_BAD_NAME:
++    err_msg= "Kerberos: input name could not be recognied.";
++    break;
++  case GSS_S_BAD_MECH:
++    err_msg= "Kerberos: a bad mechanism is requested.";
++    break;
++  case GSS_S_CREDENTIALS_EXPIRED:
++    err_msg = "Kerberos: the credentials could not be acquired "
++              "for expiration.";
++    break;
++  case GSS_S_NO_CRED:
++    err_msg = "Kerberos: no credentials were found for the specified name.";
++    break;
++  case GSS_S_DEFECTIVE_TOKEN:
++    err_msg = "Kerberos: consistency checks performed on "
++              "the input token failed.";
++    break;
++  case GSS_S_DEFECTIVE_CREDENTIAL:
++    err_msg = "Kerberos: consistency checks performed on "
++              "the credential failed.";
++    break;
++  case GSS_S_BAD_BINDINGS:
++    err_msg = "Kerberos: the input token contains "
++              "different channel bindings as specified.";
++    break;
++  case GSS_S_NO_CONTEXT:
++    err_msg = "Kerberos: the supplied context handle is invalid.";
++    break;
++  case GSS_S_BAD_SIG:
++    err_msg = "Kerberos: input token contains an invalid MIC.";
++    break;
++  case GSS_S_OLD_TOKEN:
++    err_msg = "Kerberos: input token is too old.";
++    break;
++  case GSS_S_DUPLICATE_TOKEN:
++    err_msg = "Kerberos: input token is a duplicate of a token "
++              "already processed.";
++    break;
++  case GSS_S_FAILURE:
++    snprintf(err_msg_buf, ERR_MSG_BUF_LEN,
++        "Kerberos: undefined Kerberos error. "
++        "Make sure a valid ticket-grant-ticket is acquired "
++        "and refer minor error code %d for details.", minor);
++    err_msg = err_msg_buf;
++    break;
++  default:
++    err_msg = "Kerberos: unknown error.";
++    break;
++  }
++
++  return err_msg;
++}
++#endif /* _WIN32 */
+diff --git a/plugin/auth_kerberos/kerberos_common.h b/plugin/auth_kerberos/kerberos_common.h
+new file mode 100644
+index 0000000..741824b
+--- /dev/null
++++ b/plugin/auth_kerberos/kerberos_common.h
+@@ -0,0 +1,78 @@
++/* Copyright (C) 2013 Shuang Qiu and Monty Program Ab
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++/**
++  @file
++
++  Kerberos authentication utilities
++
++  Utility functions are declared.
++*/
++#ifndef KERBEROS_COMMON_H
++#define KERBEROS_COMMON_H
++
++#include <my_sys.h>
++#include <my_global.h>
++#include <mysql.h>
++#include <mysql/plugin_auth_common.h>
++#include <ctype.h>
++#include <string.h>
++
++/* global define directives */
++#define PRINCIPAL_NAME_LEN     256         /* TODO need a reference */
++
++#define MF_ERROR               MYF(0)
++#define MF_WARNING             MYF(1)
++
++/* platform dependent header */
++#ifdef _WIN32
++    /* on Windows platform, SSPI is used to perform the authentication */
++    #include <windows.h>
++
++    #define SECURITY_WIN32                 /* User-mode SSPI application */
++    #include <Security.h>
++    #include <SecExt.h>
++    #include <sspi.h>
++#else  /* !_WIN32 */
++    /**
++     * on other platform, make sure the Kerberos environment is pre-configured
++     * GSSAPI is used for inter-operation purpose between Windows platform
++     */
++    #include <gssapi/gssapi.h>
++    #include <gssapi/gssapi_generic.h>
++    #include <gssapi/gssapi_krb5.h>
++#endif /* _WIN32 */
++
++/* platform dependent define directives */
++#ifdef _WIN32
++    #define UNUSED(x) __pragma(warning(suppress:4100)) x /* warns suppressor */
++#else
++    #define UNUSED(x) x __attribute__((unused))
++#endif /* _WIN32 */
++
++#ifdef _WIN32
++    #define SECURITY_PACKAGE_NAME          "Kerberos"
++    #define SSPI_MAX_TOKEN_SIZE            12000
++
++    #define SEC_ERROR(ss)                  ((ss) < 0)
++
++    /* translate SECURITY_STATUS to error text */
++    const char *error_msg(SECURITY_STATUS);
++#else  /* _WIN32 */
++    /* translate symbolic error number to text error message */
++    const char *error_msg(OM_uint32, OM_uint32);
++#endif /* _WIN32 */
++
++#endif /* KERBEROS_COMMON_H */
+diff --git a/plugin/auth_kerberos/kerberos_server.c b/plugin/auth_kerberos/kerberos_server.c
+new file mode 100644
+index 0000000..af381fa
+--- /dev/null
++++ b/plugin/auth_kerberos/kerberos_server.c
+@@ -0,0 +1,769 @@
++/* Copyright (C) 2013 Shuang Qiu and Monty Program Ab
++
++   This program is free software; you can redistribute it and/or modify
++   it under the terms of the GNU General Public License as published by
++   the Free Software Foundation; version 2 of the License.
++
++   This program is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++   GNU General Public License for more details.
++
++   You should have received a copy of the GNU General Public License
++   along with this program; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
++
++/**
++  @file
++
++  Kerberos server authentication plugin
++
++  kerberos_server is a general purpose server authentication plugin, it
++  authenticates user against Kerberos principal.
++
++  This is the server side implementation.
++*/
++#include <mysql/plugin_auth.h>
++
++#include "kerberos_common.h"
++
++#define KRB_SERVER_AUTH_ERROR     1
++
++/* plugin global variables */
++char *kerberos_principal_name;         /* system-wise declaration for spn */
++char *kerberos_keytab_path;
++/**
++ * underlying storage for Kerberos service principal name system variable
++ */
++static char kerberos_spn_storage[PRINCIPAL_NAME_LEN];
++static char kerberos_ktpath_storage[PRINCIPAL_NAME_LEN]; /* TODO */
++
++#ifdef _WIN32
++static int sspi_kerberos_auth(MYSQL_PLUGIN_VIO *vio, MYSQL_SERVER_AUTH_INFO *info) {
++  int read_len= 0;
++  int max_token_sz= SSPI_MAX_TOKEN_SIZE;
++  int ret= CR_OK;                   /* return code */
++  const char *err_msg= NULL;        /* error message */
++  /* SSPI related fields */
++  SECURITY_STATUS ss = 0;
++  BOOL        have_ctxt= FALSE;
++  BOOL        have_cred= FALSE;
++  BOOL        context_established= FALSE;
++  ULONG       attribs= 0;
++  TimeStamp   lifetime;
++
++  CredHandle  cred_handle;                       /* credential handle */
++  CtxtHandle  ctxt_handle;                       /* context handle */
++  SecPkgContext_NativeNames native_names;
++
++  SecPkgInfo   *sec_pkg_info;                    /* Packet information */
++  SecBufferDesc input_buf_desc;                  /* Input token */
++  SecBuffer     input_buf;
++  SecBufferDesc output_buf_desc;                 /* Output token */
++  SecBuffer     output_buf;
++  PBYTE         output_con;
++
++  /* query packet information */
++  ss= QuerySecurityPackageInfo(SECURITY_PACKAGE_NAME, &sec_pkg_info);
++
++  if (ss != SEC_E_OK)
++  {
++    /* error query package information */
++    my_error(KRB_SERVER_AUTH_ERROR, MF_WARNING,
++        "Kerberos: fail to get maximum token size, use default: %d.",
++        max_token_sz);
++  }
++  else
++  {
++    max_token_sz= sec_pkg_info->cbMaxToken;
++  }
++
++  /* allocate memory */
++  output_con= (PBYTE) calloc(max_token_sz, sizeof(BYTE));
++  if (!output_con)
++  {
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR, "Kerberos: no more memory.");
++    return CR_ERROR;
++  }
++
++  /* acquire initial credential */
++  ss= AcquireCredentialsHandle(NULL, /* use default credential */
++                               SECURITY_PACKAGE_NAME,
++                               SECPKG_CRED_INBOUND, /* cred usage */
++                               NULL, /* locally unique id */
++                               NULL, /* use default credential */
++                               NULL, /* get key func */
++                               NULL, /* get key argument func */
++                               &cred_handle,
++                               &lifetime);
++
++  /* AcquireCredentialsHandle error checking */
++  if (SEC_ERROR(ss))
++  {
++    err_msg= error_msg(ss);
++    ret= CR_ERROR;
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR, err_msg);
++    goto cleanup;
++  }
++  else
++  {
++    have_cred= TRUE;
++  }
++
++  /* prepare input buffer */
++  input_buf_desc.ulVersion= SECBUFFER_VERSION;
++  input_buf_desc.cBuffers= 1;
++  input_buf_desc.pBuffers= &input_buf;
++
++  input_buf.cbBuffer= 0;
++  input_buf.BufferType= SECBUFFER_TOKEN;
++  input_buf.pvBuffer= NULL;
++
++  /* prepare output buffer */
++  output_buf_desc.ulVersion= SECBUFFER_VERSION;
++  output_buf_desc.cBuffers= 1;
++  output_buf_desc.pBuffers= &output_buf;
++
++  output_buf.BufferType= SECBUFFER_TOKEN;
++  output_buf.cbBuffer= max_token_sz;
++  output_buf.pvBuffer= output_con;
++
++  do
++  {
++    /* read credential from client */
++    read_len= vio->read_packet(vio, (unsigned char **) &input_buf.pvBuffer);
++    if (read_len < 0) {
++      ret= CR_ERROR;
++      my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++          "Kerberos: fail read client credentials.");
++      goto cleanup;
++    }
++    input_buf.cbBuffer= read_len;
++
++    ss= AcceptSecurityContext(
++                  &cred_handle,         /* credential */
++                  have_ctxt ? &ctxt_handle : NULL,
++                  &input_buf_desc,      /* input credentials */
++                  attribs,
++                  SECURITY_NATIVE_DREP,
++                  &ctxt_handle,         /* secure context */
++                  &output_buf_desc,     /* output credentials */
++                  &attribs,
++                  &lifetime);
++
++    /* AcceptSecurityContext error checking */
++    if (SEC_ERROR(ss))
++    {
++      err_msg= error_msg(ss);
++      ret= CR_ERROR;
++      my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR, err_msg);
++      goto cleanup;
++    }
++    /* Security context established (partially) */
++    have_ctxt= TRUE;
++
++    if (output_buf.cbBuffer)
++    {
++      /* write credential packet */
++      if (vio->write_packet(vio,
++                            (const unsigned char *) output_buf.pvBuffer,
++                            output_buf.cbBuffer))
++      {
++        ret= CR_ERROR;
++        my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++            "Kerberos: fail send crednetials to client.");
++        goto cleanup;
++      }
++    }
++    output_buf.cbBuffer= max_token_sz;
++
++    if ((ss == SEC_I_COMPLETE_NEEDED) ||
++        (ss == SEC_I_COMPLETE_AND_CONTINUE))
++    {
++      ss= CompleteAuthToken(&ctxt_handle, &output_buf_desc);
++      if (SEC_ERROR(ss))
++      {
++        err_msg= error_msg(ss);
++        ret= CR_ERROR;
++        my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR, err_msg);
++        goto cleanup;
++      }
++    }
++
++    context_established= !((ss == SEC_I_CONTINUE_NEEDED) ||
++                           (ss == SEC_I_COMPLETE_AND_CONTINUE));
++  } while (!context_established);
++  
++  /* check principal name */
++  ss= QueryContextAttributes(&ctxt_handle, SECPKG_ATTR_NATIVE_NAMES, &native_names);
++
++  if (SEC_ERROR(ss))
++  {
++    err_msg= error_msg(ss);
++    ret= CR_ERROR;
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR, err_msg);
++    goto cleanup;
++  }
++
++  if (strcmp(native_names.sClientName, info->auth_string))
++  {
++    ret= CR_ERROR;
++  }
++  else
++  {
++    ret= CR_OK;
++  }
++
++cleanup:
++  /* free dynamic memory */
++  if (have_ctxt) DeleteSecurityContext(&ctxt_handle);
++  if (have_cred) FreeCredentialsHandle(&cred_handle);
++  free(output_con);
++  ss= FreeContextBuffer(sec_pkg_info);
++  if (ss != SEC_E_OK) {
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++        "Kerberos: fail to free SecurityPackageInfo object.");
++    /* return code is not modified */
++  }
++
++  return ret;
++}
++#else  /* !_WIN32 */
++static int gssapi_kerberos_auth(MYSQL_PLUGIN_VIO *vio, MYSQL_SERVER_AUTH_INFO *info) {
++  int r_len= 0;                                /* packet read length */
++  int rc= CR_OK;                               /* return code */
++  int have_cred= FALSE;
++  int have_ctxt= FALSE;
++  const char *err_msg= NULL;                   /* error message text */
++  /* GSSAPI related fields */
++  OM_uint32 major= 0, minor= 0, flags= 0;
++  gss_cred_id_t   cred;                        /* credential identifier */
++  gss_ctx_id_t    ctxt;                        /* context identifier */
++  gss_name_t      client_name, service_name;
++  gss_buffer_desc principal_name_buf, client_name_buf, input, output;
++
++  /* import service principal from plain text */
++  /* initialize principal name */
++  principal_name_buf.length= strlen(kerberos_principal_name);
++  principal_name_buf.value= kerberos_principal_name;
++  major= gss_import_name(&minor,
++                         &principal_name_buf,
++                         (gss_OID) gss_nt_user_name,
++                         &service_name);
++  /* gss_import_name error checking */
++  if (GSS_ERROR(major))
++  {
++    err_msg= error_msg(major, minor);
++    rc= CR_ERROR;
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR, err_msg);
++    goto cleanup;
++  }
++
++  /* server acquires credential */
++  if (kerberos_keytab_path[0] != '\0') {
++    /* it's been set */
++    gss_key_value_element_desc element = {
++      "keytab",
++      kerberos_keytab_path,
++    };
++    gss_key_value_set_desc cred_store = {
++      1,
++      &element,
++    };
++    major= gss_acquire_cred_from(&minor,
++                                 service_name,
++                                 GSS_C_INDEFINITE,
++                                 GSS_C_NO_OID_SET,
++                                 GSS_C_ACCEPT,
++                                 &cred_store,
++                                 &cred,
++                                 NULL,
++                                 NULL);
++  } else {
++    /* if there's no keytab set, try to use the env var */
++    major= gss_acquire_cred(&minor,
++                            service_name,
++                            GSS_C_INDEFINITE,
++                            GSS_C_NO_OID_SET,
++                            GSS_C_ACCEPT,                           
++                            &cred,
++                            NULL,
++                            NULL);    
++  }
++
++  /* gss_acquire_cred error checking */
++  if (GSS_ERROR(major))
++  {
++    err_msg= error_msg(major, minor);
++    rc= CR_ERROR;
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR, err_msg);
++    goto cleanup;
++  }
++  else
++  {
++    have_cred= TRUE;
++  }
++
++  major= gss_release_name(&minor, &service_name);
++  if (major == GSS_S_BAD_NAME)
++  {
++    rc= CR_ERROR;
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++        "Kerbeos: fail when invoke gss_release_name, no valid name found.");
++    goto cleanup;
++  }
++
++  /* accept security context */
++  ctxt= GSS_C_NO_CONTEXT;
++  /* first trial */
++  input.length= 0;
++  input.value= NULL;
++  do {
++    /* receive token from peer first */
++    r_len= vio->read_packet(vio, (unsigned char **) &input.value);
++    if (r_len < 0) {
++      rc= CR_ERROR;
++      my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++              "Kerberos: fail to read token from client.");
++      goto cleanup;
++    }
++    else
++    {
++      /* make length consistent with value */
++      input.length= r_len;
++    }
++
++    major= gss_accept_sec_context(&minor, 
++                                  &ctxt,          /* ctxt handle */
++                                  cred,
++                                  &input,         /* input buffer */
++                                  GSS_C_NO_CHANNEL_BINDINGS,
++                                  &client_name,   /* source name */
++                                  NULL,           /* mech type */
++                                  &output,        /* output buffer */
++                                  &flags,         /* return flag */
++                                  NULL,           /* time rec */
++                                  NULL);
++    if (GSS_ERROR(major))
++    {
++      if (ctxt != GSS_C_NO_CONTEXT)
++      {
++        gss_delete_sec_context(&minor,
++                               &ctxt,
++                               GSS_C_NO_BUFFER);
++      }
++      err_msg= error_msg(major, minor);
++      rc= CR_ERROR;
++      my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR, err_msg);
++      goto cleanup;
++    }
++    /* security context established (partially) */
++    have_ctxt= TRUE;
++
++    /* send token to peer */
++    if (output.length)
++    {
++      if (vio->write_packet(vio, output.value, output.length))
++      {
++        gss_release_buffer(&minor, &output);
++        rc= CR_ERROR;
++        my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++            "Kerberos: fail to send authentication token.");
++        goto cleanup;
++      }
++      gss_release_buffer(&minor, &output);
++    }
++  } while (major & GSS_S_CONTINUE_NEEDED);
++
++  /* extrac plain text client name */
++  major= gss_display_name(&minor, client_name, &client_name_buf, NULL);
++  if (major == GSS_S_BAD_NAME)
++  {
++    rc= CR_ERROR;
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++        "Kerberos: fail to display an ill-formed principal name.");
++    goto cleanup;
++  }
++
++  /* expected user? */
++  if (strncmp(client_name_buf.value, info->auth_string, PRINCIPAL_NAME_LEN))
++  {
++    gss_release_buffer(&minor, &client_name_buf);
++    rc= CR_ERROR;
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++        "Kerberos: fail authentication user.");
++    goto cleanup;
++  }
++  gss_release_buffer(&minor, &client_name_buf);
++
++cleanup:
++  if (have_ctxt) gss_delete_sec_context(&minor, &ctxt, GSS_C_NO_BUFFER);
++  if (have_cred) gss_release_cred(&minor, &cred);
++
++  return rc;
++}
++#endif /* _WIN32 */
++
++/**
++ * The main server function of the Kerberos plugin.
++ */
++static int kerberos_auth(MYSQL_PLUGIN_VIO *vio, MYSQL_SERVER_AUTH_INFO *info)
++{
++  size_t p_len= 0;                      /* length of principal name */
++  int rc= CR_OK;                        /* return code */
++  char *principal_name= NULL;
++
++  /* server sends service principal name first. */
++  p_len= strlen(kerberos_principal_name);
++  if (!p_len)
++  {
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++        "Kerberos: no principal name specified.");
++    return CR_ERROR;
++  }
++
++  if (vio->write_packet(vio,
++                        (unsigned char *) kerberos_principal_name,
++                        (int) p_len) < 0)
++  {
++    my_error(KRB_SERVER_AUTH_ERROR, MF_ERROR,
++        "Kerberos: fail to send service principal name.");
++    return CR_ERROR;
++  }
++
++  rc =
++#ifdef _WIN32
++       sspi_kerberos_auth(vio, info);
++#else  /* !_WIN32 */
++       gssapi_kerberos_auth(vio, info);
++#endif /* _WIN32 */
++
++  free(principal_name);
++
++  return rc;
++}
++
++#ifdef _WIN32
++static BOOL GetLogonSID (PSID *ppsid) 
++{
++  BOOL succ= FALSE;
++  HANDLE token;
++  DWORD index;
++  DWORD length= 0;
++  PTOKEN_GROUPS ptg= NULL;
++
++  /* Verify the parameter passed in is not NULL. */
++  if (ppsid == NULL)
++    goto cleanup;
++
++  /* Open a handle to the access token for the calling process. */
++  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token ))
++    goto cleanup;
++
++  /* Get required buffer size and allocate the TOKEN_GROUPS buffer. */
++  if (!GetTokenInformation(
++        token,          /* handle to the access token */
++        TokenGroups,    /* get information about the token's groups */
++        (LPVOID) ptg,   /* pointer to TOKEN_GROUPS buffer */
++        0,              /* size of buffer */
++        &length         /* receives required buffer size */
++      ))
++  {
++    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) 
++      goto cleanup;
++
++    ptg= (PTOKEN_GROUPS)HeapAlloc(GetProcessHeap(),
++                                  HEAP_ZERO_MEMORY, length);
++
++    if (ptg == NULL)
++      goto cleanup;
++  }
++
++  /* Get the token group information from the access token. */
++  if (!GetTokenInformation(
++          token,        /* handle to the access token */
++          TokenGroups,  /* get information about the token's groups */
++          (LPVOID) ptg, /* pointer to TOKEN_GROUPS buffer */
++          length,       /* size of buffer */
++          &length       /* receives required buffer size */
++          ))
++  {
++    goto cleanup;
++  }
++
++  /* Loop through the groups to find the logon SID. */
++  for (index= 0; index < ptg->GroupCount; index++)
++  {
++    if ((ptg->Groups[index].Attributes & SE_GROUP_LOGON_ID)
++            == SE_GROUP_LOGON_ID)
++    {
++      /* Found the logon SID; make a copy of it. */
++      length= GetLengthSid(ptg->Groups[index].Sid);
++          *ppsid= (PSID) HeapAlloc(GetProcessHeap(),
++                  HEAP_ZERO_MEMORY, length);
++      if (*ppsid == NULL)
++        goto cleanup;
++      if (!CopySid(length, *ppsid, ptg->Groups[index].Sid)) 
++      {
++        HeapFree(GetProcessHeap(), 0, (LPVOID)*ppsid);
++        goto cleanup;
++      }
++      break;
++    }
++  }
++  succ= TRUE;
++
++cleanup:
++  /* Free the buffer for the token groups. */
++  if (ptg != NULL)
++    HeapFree(GetProcessHeap(), 0, (LPVOID)ptg);
++
++  return succ;
++}
++
++static VOID FreeLogonSID (PSID *ppsid) 
++{
++  HeapFree(GetProcessHeap(), 0, (LPVOID)*ppsid);
++}
++
++static BOOLEAN LogonAsNetworkService(void)
++{
++  SID  sNetServ;
++  PSID psLogon= NULL;
++  DWORD szSid= sizeof(sNetServ);
++  BOOLEAN bRetCode= FALSE;
++
++  if (GetLogonSID(&psLogon) &&
++      CreateWellKnownSid(WinNetworkServiceSid, NULL, &sNetServ, &szSid) &&
++      EqualSid(psLogon, &sNetServ))
++  {
++    bRetCode= TRUE;
++  }
++
++  if (psLogon) FreeLogonSID(&psLogon);
++
++  return bRetCode;
++}
++
++static int initialize_principal_name(void *unused)
++{
++  int ret= 0;
++  ULONG len= sizeof(kerberos_spn_storage);
++  CHAR *computer_name= NULL;
++  CHAR *domain_name= NULL;
++  BOOLEAN api_rc= TRUE;
++
++#define KRB_AUTH_SERVER_INIT_ERROR(ret, msg) \
++  do { ret= -1; \
++      my_error(ret, MF_ERROR, msg); \
++  } while(0)
++
++  /* principal name has already been set */
++  if (kerberos_principal_name && kerberos_principal_name[0]) return ret;
++
++  api_rc= GetUserNameEx(NameUserPrincipal, kerberos_spn_storage, &len);
++  if (!api_rc)
++  {
++    switch (GetLastError())
++    {
++    case ERROR_NO_SUCH_DOMAIN:
++      ret = CR_ERROR;
++      my_error(KRB_SERVER_AUTH_ERROR, MF_WARNING,
++          "Kerberos: the domain controller is not up.");
++      break;
++    case ERROR_NONE_MAPPED:
++    /* cannot find UPN for logon user */
++    /*
++     * If logon sid is NetworkService, a fallback is construct
++     * UPN (computer$@domain) manually.
++     */
++      if (LogonAsNetworkService())
++      {
++        BOOLEAN done= TRUE;
++
++        len= PRINCIPAL_NAME_LEN;
++        computer_name= (CHAR *) calloc(len, sizeof(CHAR));
++        done= (computer_name == NULL);
++        if (done && (done= GetComputerNameEx(ComputerNameDnsHostname,
++                computer_name, &len)))
++        {
++          len= PRINCIPAL_NAME_LEN;
++          domain_name= (CHAR *) calloc(len, sizeof(CHAR));
++          done= (domain_name == NULL);
++          if (done && (done= GetComputerNameEx(ComputerNameDnsDomain,
++                  domain_name, &len)))
++          {
++            sprintf_s(kerberos_spn_storage,
++                      sizeof(kerberos_spn_storage),
++                      "%s$@%s", computer_name, domain_name);
++          }
++        }
++              
++        /* Release heap memory */
++        if (computer_name) free(computer_name);
++        if (domain_name)   free(domain_name);
++
++        if (!done)
++        {
++          KRB_AUTH_SERVER_INIT_ERROR(ret,
++              "Kerberos: the name is not available in specific format.");
++        }
++        else
++        {
++          /* redirect the variable */
++          kerberos_principal_name= kerberos_spn_storage;
++        }
++      }
++      else
++      {
++        KRB_AUTH_SERVER_INIT_ERROR(ret,
++            "Kerberos: the name is not available in specific format.");
++      }
++      break;
++    default:
++      break;
++    }
++  }
++  else
++  {
++    /* redirect the variable */
++    kerberos_principal_name= kerberos_spn_storage;
++  }
++
++/* localize macro KRB_AUTH_SERVER_INIT_ERROR */
++#undef KRB_AUTH_SERVER_INIT_ERROR
++
++  return ret;
++}
++#endif /* _WIN32 */
++
++static int verify_principal_name(UNUSED(MYSQL_THD thd),
++    UNUSED(struct st_mysql_sys_var UNUSED(*var)), UNUSED(void *save),
++    UNUSED(struct st_mysql_value *value)) {
++  char upn_buf[PRINCIPAL_NAME_LEN];
++  int buf_len= PRINCIPAL_NAME_LEN;
++  /* UPN should in the form `user@domain` or `user/host@domain` */
++  const char *ptr= value->val_str(value, upn_buf, &buf_len);
++  const char *itr= ptr;
++
++#define FWD_ITER(iter) while (*iter && (isalpha(*iter)||(*itr)=='.')) iter++
++  /* user part */
++  if (*itr && isalpha(*itr))
++  {
++    FWD_ITER(itr);
++  }
++  else
++  {
++    /* name part is required */
++    return 1;
++  }
++
++  /* host part, which is optional */
++  if (*itr && *itr == '/')
++  {
++    itr++;
++    FWD_ITER(itr);
++  }
++
++  /* domain part */
++  if (*itr && *itr == '@')
++  {
++    itr++;
++    FWD_ITER(itr);
++  }
++  else
++  {
++    /* domain part is required */
++    return 1;
++  }
++
++  /* if validated return 0, or any non-zero value */
++  if (!*itr)
++  {
++    strncpy(kerberos_spn_storage, ptr, PRINCIPAL_NAME_LEN);
++  }
++  return *itr;
++}
++
++static void update_principal_name(UNUSED(MYSQL_THD thd),
++    UNUSED(struct st_mysql_sys_var* var), UNUSED(void * var_ptr),
++    UNUSED(const void * save))
++{
++  kerberos_principal_name= kerberos_spn_storage;
++}
++
++static int verify_keytab_path(UNUSED(MYSQL_THD thd),
++    UNUSED(struct st_mysql_sys_var UNUSED(*var)), UNUSED(void *save),
++    UNUSED(struct st_mysql_value *value)) {
++  char path_buf[PRINCIPAL_NAME_LEN];
++  int buf_len= PRINCIPAL_NAME_LEN;
++
++  const char *ptr= value->val_str(value, path_buf, &buf_len);
++
++  /* paths must be fully-qualified */
++  if (ptr[0] == '/' && !access(ptr, R_OK))
++  {
++    strncpy(kerberos_ktpath_storage, ptr, PRINCIPAL_NAME_LEN);
++    return 0;
++  }
++  return 1;
++}
++
++static void update_keytab_path(UNUSED(MYSQL_THD thd),
++    UNUSED(struct st_mysql_sys_var* var), UNUSED(void * var_ptr),
++    UNUSED(const void * save))
++{
++  kerberos_keytab_path= kerberos_ktpath_storage;
++}
++
++/* system variable */
++static MYSQL_SYSVAR_STR(principal_name, kerberos_principal_name,
++                        PLUGIN_VAR_RQCMDARG,
++                        "Service principal name in Kerberos authentication.",
++                        verify_principal_name,
++                        update_principal_name,
++                        "");
++static MYSQL_SYSVAR_STR(keytab_path, kerberos_keytab_path,
++                        PLUGIN_VAR_RQCMDARG,
++                        "Location of Kerberos keytab.",
++                        verify_keytab_path,
++                        update_keytab_path,
++                        "");
++
++static struct st_mysql_sys_var *system_variables[]= {
++  MYSQL_SYSVAR(principal_name),
++  MYSQL_SYSVAR(keytab_path),
++  NULL
++};
++
++/* register Kerberos authentication plugin */
++static struct st_mysql_auth server_handler= {
++  MYSQL_AUTHENTICATION_INTERFACE_VERSION,
++  "kerberos_client",
++  kerberos_auth
++};
++
++maria_declare_plugin(kerberos_server)
++{
++  MYSQL_AUTHENTICATION_PLUGIN,
++  &server_handler,
++  "kerberos",
++  "Shuang Qiu",
++  "Plugin for Kerberos based authentication.",
++  PLUGIN_LICENSE_GPL,
++#ifdef _WIN32
++  initialize_principal_name,
++#else  /* _WIN32 */
++  NULL,
++#endif /* _WIN32 */
++  NULL,                                  /* destructor */
++  0x0100,                                /* version */
++  NULL,                                  /* status variables */
++  system_variables,                      /* system variables */
++  "Kerberos authentication plugin 1.0",
++  MariaDB_PLUGIN_MATURITY_EXPERIMENTAL   /* TODO change when release */
++}
++maria_declare_plugin_end;
++
++/* localize macro KRB_AUTH_SERVER_ERROR */
++#undef KRB_AUTH_SERVER_ERROR
