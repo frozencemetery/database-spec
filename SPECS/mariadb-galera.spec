@@ -7,7 +7,7 @@
 
 Name: mariadb-galera
 Version: 5.5.42
-Release: 2%{?dist}
+Release: 3%{?dist}
 Epoch: 1
 
 Summary: A community developed branch of MySQL
@@ -957,6 +957,9 @@ fi
 # %{_mandir}/man1/mysql_client_test.1*
 
 %changelog
+* Mon Jul 27 2015 Robbie Harwood <rharwood@redhat.com> - 1:5.5.42-3
+- Use my GSSAPI patchse instead
+
 * Mon Jul 27 2015 Robbie Harwood <rharwood@redhat.com> - 1:5.5.42-2
 - Disable selftest for COPR
 - Include GSSAPI patches
