@@ -104,7 +104,7 @@
 
 Name:             %{pkgname}
 Version:          %{compatver}.%{bugfixver}
-Release:          27%{?with_debug:.debug}%{?dist}
+Release:          28%{?with_debug:.debug}%{?dist}
 Epoch:            1
 
 Summary:          A community developed branch of MySQL
@@ -195,6 +195,7 @@ BuildRequires:    perl(Sys::Hostname)
 BuildRequires:    perl(Test::More)
 BuildRequires:    perl(Time::HiRes)
 %{?with_init_systemd:BuildRequires: systemd}
+BuildRequires:    krb5-devel
 
 Requires:         bash
 Requires:         fileutils
@@ -1251,6 +1252,9 @@ fi
 %endif
 
 %changelog
+* Fri Oct 02 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.13-28
+- BuildRequires on krb5-devel
+
 * Fri Oct 02 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.13-27
 - Backport gssapi enc
 - Disable test suite

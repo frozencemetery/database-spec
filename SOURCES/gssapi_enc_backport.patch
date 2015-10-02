@@ -10,7 +10,6 @@ index c5752d3..58dfa80 100644
  INCLUDE(wsrep)
  
  # Handle options
- OPTION(DISABLE_SHARED 
 @@ -375,6 +376,8 @@ MYSQL_CHECK_ZLIB_WITH_COMPRESS()
  MYSQL_CHECK_SSL()
  # Add readline or libedit.
