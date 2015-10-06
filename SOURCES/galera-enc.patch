@@ -1,0 +1,1287 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c7f07d9..fe5138e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -148,6 +148,7 @@ INCLUDE(ctest)
+ INCLUDE(plugin)
+ INCLUDE(install_macros)
+ INCLUDE(mysql_add_executable)
++INCLUDE(gssapi)
+ 
+ # Handle options
+ OPTION(DISABLE_SHARED 
+@@ -356,6 +357,8 @@ MYSQL_CHECK_ZLIB_WITH_COMPRESS()
+ MYSQL_CHECK_SSL()
+ # Add readline or libedit.
+ MYSQL_CHECK_READLINE()
++# Add GSSAPI
++MYSQL_CHECK_GSSAPI()
+ 
+ SET(MALLOC_LIBRARY "system")
+ CHECK_JEMALLOC()
+diff --git a/cmake/gssapi.cmake b/cmake/gssapi.cmake
+new file mode 100644
+index 0000000..4bece1f
+--- /dev/null
++++ b/cmake/gssapi.cmake
+@@ -0,0 +1,21 @@
++# Copyright (c) 2015 Red Hat, Inc.
++# Copyright (c) 2015 Robbie Harwood <rharwood@redhat.com>
++
++# Permission to use, copy, modify, and/or distribute this software for any
++# purpose with or without fee is hereby granted, provided that the above
++# copyright notice and this permission notice appear in all copies.
++
++# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
++# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
++# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
++# SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
++# OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
++# CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++
++MACRO (MYSQL_CHECK_GSSAPI)
++  FIND_PACKAGE(PkgConfig)
++  PKG_CHECK_MODULES(GSSAPI REQUIRED krb5-gssapi)
++  SET(HAVE_GSSAPI GSSAPI_FOUND)
++ENDMACRO()
++
+diff --git a/config.h.cmake b/config.h.cmake
+index 6a05277..cd2a62e 100644
+--- a/config.h.cmake
++++ b/config.h.cmake
+@@ -126,6 +126,9 @@
+ #cmakedefine USE_LIBEDIT_INTERFACE 1
+ #cmakedefine USE_NEW_READLINE_INTERFACE 1
+ 
++/* GSSAPI */
++#cmakedefine HAVE_GSSAPI 1
++
+ #cmakedefine FIONREAD_IN_SYS_IOCTL 1
+ #cmakedefine GWINSZ_IN_SYS_IOCTL 1
+ #cmakedefine TIOCSTAT_IN_SYS_IOCTL 1
+diff --git a/include/violite.h b/include/violite.h
+index 68b2b6c..b0ea1f7 100644
+--- a/include/violite.h
++++ b/include/violite.h
+@@ -25,7 +25,9 @@
+ #include "my_net.h"   /* needed because of struct in_addr */
+ #include <mysql/psi/mysql_socket.h>
+ 
+-/* Simple vio interface in C;  The functions are implemented in violite.c */
++/* Simple vio interface in C; the functions are implemented in the top-level
++ * vio/ directory.
++ */
+ 
+ #ifdef	__cplusplus
+ extern "C" {
+@@ -38,7 +40,7 @@ typedef struct st_vio Vio;
+ enum enum_vio_type
+ {
+   VIO_CLOSED, VIO_TYPE_TCPIP, VIO_TYPE_SOCKET, VIO_TYPE_NAMEDPIPE,
+-  VIO_TYPE_SSL, VIO_TYPE_SHARED_MEMORY
++  VIO_TYPE_SSL, VIO_TYPE_SHARED_MEMORY, VIO_TYPE_GSSAPI
+ };
+ 
+ /**
+@@ -122,6 +124,12 @@ int vio_getnameinfo(const struct sockaddr *sa,
+                     char *port, size_t port_size,
+                     int flags);
+ 
++#ifdef HAVE_GSSAPI
++#include <gssapi/gssapi.h>
++#include <gssapi/gssapi_ext.h>
++#include <gssapi/gssapi_generic.h>
++#endif /* HAVE_GSSAPI */
++
+ #ifdef HAVE_OPENSSL
+ #include <openssl/opensslv.h>
+ #if OPENSSL_VERSION_NUMBER < 0x0090700f
+@@ -227,6 +235,39 @@ enum SSL_type
+   SSL_TYPE_SPECIFIED
+ };
+ 
++#ifdef HAVE_GSSAPI
++#define GSS_DBUG_ERROR(major, minor)                                \
++  do                                                                \
++  {                                                                 \
++    gss_buffer_desc db_input;                                       \
++    OM_uint32 resmajor = major, resminor = minor;                   \
++    OM_uint32 cont = 0;                                             \
++                                                                    \
++    do                                                              \
++    {                                                               \
++      db_input.length = 0;                                          \
++      db_input.value = NULL;                                        \
++      major = gss_display_status(&minor, resmajor, GSS_C_GSS_CODE,  \
++                                 GSS_C_NO_OID, &cont, &input);      \
++      DBUG_PRINT("gsserror", ("%s", (char *) db_input.value));      \
++      major = gss_release_buffer(&minor, &input);                   \
++    }                                                               \
++    while (cont != 0);                                              \
++    cont = 0;                                                       \
++    do                                                              \
++    {                                                               \
++      db_input.length = 0;                                          \
++      db_input.value = NULL;                                        \
++      major = gss_display_status(&minor, resminor, GSS_C_MECH_CODE, \
++                                 GSS_C_NO_OID, &cont, &db_input);   \
++      DBUG_PRINT("gsserror", ("%s", (char *) db_input.value));      \
++      major = gss_release_buffer(&minor, &db_input);                \
++    }                                                               \
++    while (cont != 0);                                              \
++  }                                                                 \
++  while (0);
++#endif /* HAVE_GSSAPI */
++
+ 
+ /* HFTODO - hide this if we don't want client in embedded server */
+ /* This structure is for every connection on both sides */
+@@ -288,5 +329,8 @@ struct st_vio
+   DWORD read_timeout_ms;
+   DWORD write_timeout_ms;
+ #endif
++#ifdef HAVE_GSSAPI
++  gss_ctx_id_t gss_ctxt;
++#endif /* HAVE_GSSAPI */
+ };
+ #endif /* vio_violite_h_ */
+diff --git a/mysql-test/r/kerberos.result b/mysql-test/r/kerberos.result
+new file mode 100644
+index 0000000..1d70304
+--- /dev/null
++++ b/mysql-test/r/kerberos.result
+@@ -0,0 +1,11 @@
++CREATE USER test_kerberos IDENTIFIED VIA kerberos AS 'MTR_KERBEROS_UPN';
++SET GLOBAL kerberos_principal_name='MTR_KERBEROS_SPN';
++#
++# user principal is accepted, and authentication is successful.
++#
++SELECT USER();
++USER()
++test_kerberos@localhost
++# connection is persistent.
++SET GLOBAL kerberos_principal_name='';
++DROP USER test_kerberos;
+diff --git a/mysql-test/t/kerberos.test b/mysql-test/t/kerberos.test
+new file mode 100644
+index 0000000..3473eb1
+--- /dev/null
++++ b/mysql-test/t/kerberos.test
+@@ -0,0 +1,34 @@
++# Testing Kerberos plugin
++#
++# Requires the following env variables set:
++#   - MTR_KERBEROS_ENABLED: whether to run the test
++#   - MTR_KERBEROS_UPN: kerberos princapal name to connect as
++#   - MTR_KERBEROS_SPN: kerberos principal name for the server
++#   - KRB5_KTNAME: location of keytab (if not default)
++
++--source include/not_embedded.inc
++
++if (!$MTR_KERBEROS_ENABLED) {
++  skip Kerberos not configured;
++}
++
++--replace_result $MTR_KERBEROS_UPN MTR_KERBEROS_UPN
++eval CREATE USER test_kerberos IDENTIFIED VIA kerberos AS '$MTR_KERBEROS_UPN';
++
++--replace_result $MTR_KERBEROS_SPN MTR_KERBEROS_SPN
++eval SET GLOBAL kerberos_principal_name='$MTR_KERBEROS_SPN';
++
++--echo #
++--echo # user principal is accepted, and authentication is successful.
++--echo #
++--exec echo "SELECT USER();" | $MYSQL_TEST -u test_kerberos
++--echo # connection is persistent.
++
++# --echo #
++# --echo # authentication is unsuccessful
++# --echo #
++# --error 1
++# --exec $MYSQL_TEST -u test_kerberos
++
++SET GLOBAL kerberos_principal_name='';
++DROP USER test_kerberos;
+diff --git a/sql-common/client.c b/sql-common/client.c
+index 4b44368..560670e 100644
+--- a/sql-common/client.c
++++ b/sql-common/client.c
+@@ -1,5 +1,6 @@
+ /* Copyright (c) 2003, 2014, Oracle and/or its affiliates.
+    Copyright (c) 2009, 2015, MariaDB
++   Copyright (c) 2015 Shuang Qiu and Monty Program Ab
+ 
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+@@ -112,6 +113,9 @@ my_bool	net_flush(NET *net);
+ 
+ #define native_password_plugin_name "mysql_native_password"
+ #define old_password_plugin_name    "mysql_old_password"
++#ifdef HAVE_GSSAPI
++#define kerberos_plugin_name        "kerberos"
++#endif /* HAVE_GSSAPI */
+ 
+ uint            mariadb_deinitialize_ssl= 1;
+ uint		mysql_port=0;
+@@ -2363,6 +2367,9 @@ typedef struct st_mysql_client_plugin_AUTHENTICATION auth_plugin_t;
+ static int client_mpvio_write_packet(struct st_plugin_vio*, const uchar*, int);
+ static int native_password_auth_client(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql);
+ static int old_password_auth_client(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql);
++#ifdef HAVE_GSSAPI
++static int kerberos_auth_client(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql);
++#endif /* HAVE_GSSAPI */
+ 
+ static auth_plugin_t native_password_client_plugin=
+ {
+@@ -2396,11 +2403,32 @@ static auth_plugin_t old_password_client_plugin=
+   old_password_auth_client
+ };
+ 
++#ifdef HAVE_GSSAPI
++static auth_plugin_t kerberos_client_plugin=
++{
++  MYSQL_CLIENT_AUTHENTICATION_PLUGIN,
++  MYSQL_CLIENT_AUTHENTICATION_PLUGIN_INTERFACE_VERSION,
++  kerberos_plugin_name,
++  "Shuang Qiu, Monty Program Ab",
++  "Kerberos-based auth & encryption",
++  {1, 0, 0},
++  "GPL",
++  NULL,
++  NULL,
++  NULL,
++  NULL,
++  kerberos_auth_client
++};
++#endif /* HAVE_GSSAPI */
++
+ 
+ struct st_mysql_client_plugin *mysql_client_builtins[]=
+ {
+   (struct st_mysql_client_plugin *)&native_password_client_plugin,
+   (struct st_mysql_client_plugin *)&old_password_client_plugin,
++#ifdef HAVE_GSSAPI
++  (struct st_mysql_client_plugin *)&kerberos_client_plugin,
++#endif
+   0
+ };
+ 
+@@ -3135,6 +3163,14 @@ int run_plugin_auth(MYSQL *mysql, char *data, uint data_len,
+       }
+     }
+   }
++
++#ifdef HAVE_GSSAPI
++  if (!strcmp(auth_plugin->name, kerberos_plugin_name))
++  {
++    vio_reset(mysql->net.vio, VIO_TYPE_GSSAPI,
++              mysql_socket_getfd(mysql->net.vio->mysql_socket), NULL, 0);
++  }
++#endif /* HAVE_GSSAPI */
+   /*
+     net->read_pos[0] should always be 0 here if the server implements
+     the protocol correctly
+@@ -4889,6 +4925,141 @@ static int old_password_auth_client(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql)
+   DBUG_RETURN(CR_OK);
+ }
+ 
++#ifdef HAVE_GSSAPI
++static int gssapi_kerberos_auth_client(const char *spn,
++                                       MYSQL *mysql __attribute__((unused)),
++                                       MYSQL_PLUGIN_VIO *vio)
++{
++  int r_len, context_established, rc, have_cred, have_ctxt, have_name;
++  OM_uint32 major, minor;
++  gss_name_t service_name;
++  gss_ctx_id_t ctxt;
++  gss_buffer_desc spn_buf, input, output;
++  gss_cred_id_t cred;
++
++  DBUG_ENTER("gssapi_kerberos_auth_client");
++  
++  r_len= 0; /* packet read length */
++  context_established= 0; /* indicate ctxt avail */
++  rc= CR_OK;
++  have_cred= have_ctxt= have_name= FALSE;
++  major= minor= 0;
++  cred= GSS_C_NO_CREDENTIAL; /* use default credential */
++
++  /* import principal from plain text */
++  /* initialize plain text service principal name */
++  spn_buf.length= strlen(spn);
++  spn_buf.value= (void *) spn;
++  /* import service principal */
++  major= gss_import_name(&minor, &spn_buf, (gss_OID) gss_nt_user_name,
++                         &service_name);
++  /* gss_import_name error checking */
++  if (GSS_ERROR(major))
++
++  {
++    GSS_DBUG_ERROR(major, minor);
++    rc= CR_ERROR;
++    goto cleanup;
++  }
++  have_name= TRUE;
++
++  /* initial context */
++  ctxt= GSS_C_NO_CONTEXT;
++  input.length= 0;
++  input.value= NULL;
++
++  while (!context_established)
++  {
++    major= gss_init_sec_context(&minor, cred, &ctxt, service_name,
++                                GSS_C_NO_OID, 0, 0, GSS_C_NO_CHANNEL_BINDINGS,
++                                &input, NULL, &output, NULL, NULL);
++
++    if (output.length)
++    {
++      /* send credential */
++      if (vio->write_packet(vio, output.value, output.length))
++      {
++        GSS_DBUG_ERROR(major, minor);
++        rc= CR_ERROR;
++        goto cleanup;
++      }
++      gss_release_buffer(&minor, &output);
++    }
++
++    if (GSS_ERROR(major))
++    {
++      /* fatal error */
++      if (ctxt != GSS_C_NO_CONTEXT)
++      {
++        gss_delete_sec_context(&minor, &ctxt, GSS_C_NO_BUFFER);
++      }
++      GSS_DBUG_ERROR(major, minor);
++      rc= CR_ERROR;
++      goto cleanup;
++    }
++
++    if (major & GSS_S_CONTINUE_NEEDED)
++    {
++      r_len= vio->read_packet(vio, (unsigned char **) &input.value);
++      if (r_len < 0)
++      {
++        rc= CR_ERROR;
++        GSS_DBUG_ERROR(major, minor);
++        goto cleanup;
++      }
++    }
++    else
++    {
++      context_established= 1;
++      mysql->net.vio->gss_ctxt= ctxt;
++    }
++  }
++
++cleanup:
++  if (have_name)
++    gss_release_name(&minor, &service_name);
++  if (have_ctxt && !context_established)
++    gss_delete_sec_context(&minor, &ctxt, GSS_C_NO_BUFFER);
++  if (have_cred)
++    gss_release_cred(&minor, &cred);
++
++  DBUG_RETURN(rc);
++}
++
++static int kerberos_auth_client(MYSQL_PLUGIN_VIO *vio, MYSQL *mysql)
++{
++  int r_len, rc;
++  char *spn, *spn_buff;
++  const int PRINCIPAL_NAME_LEN= 256;
++  
++  DBUG_ENTER("kerberos_auth_client");
++
++  r_len= 0;
++  rc= CR_OK;
++  
++  spn= NULL; /* service principal name */
++  spn_buff= (char *) malloc(PRINCIPAL_NAME_LEN);
++  if (!spn_buff)
++  {
++    DBUG_PRINT("kerberos_auth_client", ("malloc failure!"));
++    DBUG_RETURN(-1);
++  }
++
++  /* read from server for service principal name */
++  r_len= vio->read_packet(vio, (unsigned char **) &spn);
++  if (r_len < 0)
++  {
++    DBUG_PRINT("kerberos", ("fail to read service principal name."));
++    DBUG_RETURN(CR_ERROR);
++  }
++  strncpy(spn_buff, spn, PRINCIPAL_NAME_LEN);
++
++  rc= gssapi_kerberos_auth_client((const char *) spn_buff, mysql, vio);
++
++  free(spn_buff);
++  DBUG_RETURN(rc);
++}
++#endif /* HAVE_GSSAPI */
+ 
+ my_socket STDCALL
+ mysql_get_socket(const MYSQL *mysql)
+diff --git a/sql/sql_acl.cc b/sql/sql_acl.cc
+index e4975ac..d2125eb 100644
+--- a/sql/sql_acl.cc
++++ b/sql/sql_acl.cc
+@@ -1,5 +1,6 @@
+ /* Copyright (c) 2000, 2013, Oracle and/or its affiliates.
+    Copyright (c) 2009, 2014, SkySQL Ab.
++   Copyright (c) 2015 Shuang Qiu and Monty Program Ab.
+ 
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+@@ -55,6 +56,11 @@
+ 
+ #include "sql_plugin_compat.h"
+ 
++#ifdef HAVE_GSSAPI
++char *kerberos_principal_name_ptr;
++char *kerberos_keytab_path_ptr;
++#endif /* HAVE_GSSAPI */
++
+ bool mysql_user_table_is_in_short_password_format= false;
+ 
+ static const
+@@ -182,6 +188,12 @@ static LEX_STRING old_password_plugin_name= {
+   C_STRING_WITH_LEN("mysql_old_password")
+ };
+ 
++#ifdef HAVE_GSSAPI
++static LEX_STRING kerberos_plugin_name= {
++  C_STRING_WITH_LEN("kerberos")
++};
++#endif /* HAVE_GSSAPI */
++
+ /// @todo make it configurable
+ LEX_STRING *default_auth_plugin_name= &native_password_plugin_name;
+ 
+@@ -204,6 +216,9 @@ LEX_STRING current_user_and_current_role= { C_STRING_WITH_LEN("*current_user_and
+ static plugin_ref old_password_plugin;
+ #endif
+ static plugin_ref native_password_plugin;
++#ifdef HAVE_GSSAPI
++static plugin_ref kerberos_plugin;
++#endif
+ 
+ static char *safe_str(char *str)
+ { return str ? str : const_cast<char*>(""); }
+@@ -278,7 +293,11 @@ class ACL_USER :public ACL_USER_BASE
+     dst->x509_issuer= safe_strdup_root(root, x509_issuer);
+     dst->x509_subject= safe_strdup_root(root, x509_subject);
+     if (plugin.str == native_password_plugin_name.str ||
+-        plugin.str == old_password_plugin_name.str)
++        plugin.str == old_password_plugin_name.str
++#ifdef HAVE_GSSAPI
++        || plugin.str == kerberos_plugin_name.str
++#endif /* HAVE_GSSAPI */
++      )
+       dst->plugin= plugin;
+     else
+       dst->plugin.str= strmake_root(root, plugin.str, plugin.length);
+@@ -859,6 +878,10 @@ static char *fix_plugin_ptr(char *name)
+                     old_password_plugin_name.str) == 0)
+     return old_password_plugin_name.str;
+   else
++  if (my_strcasecmp(system_charset_info, name,
++                    kerberos_plugin_name.str) == 0)
++    return kerberos_plugin_name.str;
++  else
+     return name;
+ }
+ 
+@@ -885,6 +908,10 @@ static bool fix_user_plugin_ptr(ACL_USER *user)
+                     old_password_plugin_name.str) == 0)
+     user->plugin= old_password_plugin_name;
+   else
++  if (my_strcasecmp(system_charset_info, user->plugin.str,
++                    kerberos_plugin_name.str) == 0)
++    user->plugin= kerberos_plugin_name;
++  else
+     return true;
+ 
+   if (user->auth_string.length)
+@@ -938,8 +965,16 @@ my_bool acl_init(bool dont_read_acl_tables)
+            &native_password_plugin_name, MYSQL_AUTHENTICATION_PLUGIN);
+   old_password_plugin= my_plugin_lock_by_name(0,
+            &old_password_plugin_name, MYSQL_AUTHENTICATION_PLUGIN);
++#ifdef HAVE_GSSAPI
++  kerberos_plugin= my_plugin_lock_by_name(0,
++           &kerberos_plugin_name, MYSQL_AUTHENTICATION_PLUGIN);
++#endif /* HAVE_GSSAPI */
+ 
+-  if (!native_password_plugin || !old_password_plugin)
++  if (!native_password_plugin || !old_password_plugin
++#ifdef HAVE_GSSAPI
++      || !kerberos_plugin
++#endif /* HAVE_GSSAPI */
++    )
+     DBUG_RETURN(1);
+ 
+   if (dont_read_acl_tables)
+@@ -1487,6 +1522,9 @@ void acl_free(bool end)
+   my_hash_free(&acl_roles_mappings);
+   plugin_unlock(0, native_password_plugin);
+   plugin_unlock(0, old_password_plugin);
++#ifdef HAVE_GSSAPI
++  plugin_unlock(0, kerberos_plugin);
++#endif /* HAVE_GSSAPI */
+   if (!end)
+     acl_cache->clear(1); /* purecov: inspected */
+   else
+@@ -2618,7 +2656,11 @@ bool change_password(THD *thd, const char *host, const char *user,
+ 
+   /* update loaded acl entry: */
+   if (acl_user->plugin.str == native_password_plugin_name.str ||
+-      acl_user->plugin.str == old_password_plugin_name.str)
++      acl_user->plugin.str == old_password_plugin_name.str
++#ifdef HAVE_GSSAPI
++      || acl_user->plugin.str == kerberos_plugin_name.str
++#endif /* HAVE_GSSAPI */
++    )
+   {
+     acl_user->auth_string.str= strmake_root(&acl_memroot, new_password, new_password_len);
+     acl_user->auth_string.length= new_password_len;
+@@ -7752,7 +7794,11 @@ static bool show_global_privileges(THD *thd, ACL_USER_BASE *acl_entry,
+     global.append ('\'');
+ 
+     if (acl_user->plugin.str == native_password_plugin_name.str ||
+-        acl_user->plugin.str == old_password_plugin_name.str)
++        acl_user->plugin.str == old_password_plugin_name.str
++#ifdef HAVE_GSSAPI
++        || acl_user->plugin.str == kerberos_plugin_name.str
++#endif /* HAVE_GSSAPI */
++      )
+     {
+       if (acl_user->auth_string.length)
+       {
+@@ -9881,7 +9927,11 @@ bool sp_grant_privileges(THD *thd, const char *sp_db, const char *sp_name,
+   if(au)
+   {
+     if (au->plugin.str != native_password_plugin_name.str &&
+-        au->plugin.str != old_password_plugin_name.str)
++        au->plugin.str != old_password_plugin_name.str
++#ifdef HAVE_GSSAPI
++        && au->plugin.str != kerberos_plugin_name.str
++#endif
++      )
+       combo->plugin= au->plugin;
+     combo->auth= au->auth_string;
+   }
+@@ -11136,12 +11186,19 @@ static bool find_mpvio_user(MPVIO_EXT *mpvio)
+   /* user account requires non-default plugin and the client is too old */
+   if (mpvio->acl_user->plugin.str != native_password_plugin_name.str &&
+       mpvio->acl_user->plugin.str != old_password_plugin_name.str &&
++#ifdef HAVE_GSSAPI
++      mpvio->acl_user->plugin.str != kerberos_plugin_name.str &&
++#endif /* HAVE_GSSAPI */
+       !(mpvio->thd->client_capabilities & CLIENT_PLUGIN_AUTH))
+   {
+     DBUG_ASSERT(my_strcasecmp(system_charset_info, mpvio->acl_user->plugin.str,
+                               native_password_plugin_name.str));
+     DBUG_ASSERT(my_strcasecmp(system_charset_info, mpvio->acl_user->plugin.str,
+                               old_password_plugin_name.str));
++#ifdef HAVE_GSSAPI
++    DBUG_ASSERT(my_strcasecmp(system_charset_info, mpvio->acl_user->plugin.str,
++                              kerberos_plugin_name.str));
++#endif /* HAVE_GSSAPI */
+     my_error(ER_NOT_SUPPORTED_AUTH_MODE, MYF(0));
+     general_log_print(mpvio->thd, COM_CONNECT, ER(ER_NOT_SUPPORTED_AUTH_MODE));
+     DBUG_RETURN (1);
+@@ -11882,6 +11939,10 @@ static int do_auth_once(THD *thd, const LEX_STRING *auth_plugin_name,
+ 
+   if (auth_plugin_name->str == native_password_plugin_name.str)
+     plugin= native_password_plugin;
++#ifdef HAVE_GSSAPI
++  else if (auth_plugin_name->str == kerberos_plugin_name.str)
++    plugin= kerberos_plugin;
++#endif /* HAVE_GSSAPI */
+ #ifndef EMBEDDED_LIBRARY
+   else if (auth_plugin_name->str == old_password_plugin_name.str)
+     plugin= old_password_plugin;
+@@ -12387,6 +12448,203 @@ static int old_password_authenticate(MYSQL_PLUGIN_VIO *vio,
+   return CR_AUTH_HANDSHAKE;
+ }
+ 
++#ifdef HAVE_GSSAPI
++static int gssapi_kerberos_auth(MYSQL_PLUGIN_VIO *vio,
++                                MYSQL_SERVER_AUTH_INFO *info)
++{
++  DBUG_ENTER("gssapi_kerberos_auth");
++  int r_len= 0; /* packet read length */
++  int rc= CR_OK; /* return code */
++  int have_cred= FALSE;
++  int have_ctxt= FALSE;
++  const char *err_msg= NULL; /* error message text */
++  /* GSSAPI related fields */
++  OM_uint32 major= 0, minor= 0, flags= 0;
++  gss_cred_id_t cred; /* credential identifier */
++  gss_ctx_id_t ctxt; /* context identifier */
++  gss_name_t client_name, service_name;
++  gss_buffer_desc principal_name_buf, client_name_buf, input, output;
++
++  /* import service principal from plain text */
++  /* initialize principal name */
++  principal_name_buf.length= strlen(kerberos_principal_name_ptr);
++  principal_name_buf.value= kerberos_principal_name_ptr;
++  major= gss_import_name(&minor, &principal_name_buf,
++                         (gss_OID) gss_nt_user_name, &service_name);
++  /* gss_import_name error checking */
++  if (GSS_ERROR(major))
++  {
++    GSS_DBUG_ERROR(major, minor);
++    rc= CR_ERROR;
++    goto cleanup;
++  }
++
++  /* server acquires credential */
++  if (kerberos_keytab_path_ptr[0] != '\0')
++  {
++    /* it's been set */
++    gss_key_value_element_desc element=
++      { "keytab", kerberos_keytab_path_ptr, };
++    gss_key_value_set_desc cred_store= { 1, &element, };
++    major= gss_acquire_cred_from(&minor, service_name, GSS_C_INDEFINITE,
++                                 GSS_C_NO_OID_SET, GSS_C_ACCEPT, &cred_store,
++                                 &cred, NULL, NULL);
++  }
++  else
++  {
++    /* if there's no keytab set, try to use the env var */
++    major= gss_acquire_cred(&minor, service_name, GSS_C_INDEFINITE,
++                            GSS_C_NO_OID_SET, GSS_C_ACCEPT, &cred, NULL,
++                            NULL);
++  }
++
++  if (GSS_ERROR(major))
++  {
++    GSS_DBUG_ERROR(major, minor);
++    rc= CR_ERROR;
++    goto cleanup;
++  }
++  else
++    have_cred= TRUE;
++
++  major= gss_release_name(&minor, &service_name);
++  if (major == GSS_S_BAD_NAME)
++  {
++    rc= CR_ERROR;
++    GSS_DBUG_ERROR(major, minor);
++    goto cleanup;
++  }
++
++  /* accept security context */
++  ctxt= GSS_C_NO_CONTEXT;
++  /* first trial */
++  input.length= 0;
++  input.value= NULL;
++  do
++  {
++    /* receive token from peer first */
++    r_len= vio->read_packet(vio, (unsigned char **) &input.value);
++    if (r_len < 0)
++    {
++      rc= CR_ERROR;
++      my_error(1, MYF(0),
++               "Kerberos: fail to read token from client.");
++      goto cleanup;
++    }
++    else
++    {
++      /* make length consistent with value */
++      input.length= r_len;
++    }
++
++    major= gss_accept_sec_context(&minor, &ctxt, cred, &input,
++                                  GSS_C_NO_CHANNEL_BINDINGS, &client_name,
++                                  NULL, &output, &flags, NULL, NULL);
++    if (GSS_ERROR(major))
++    {
++      if (ctxt != GSS_C_NO_CONTEXT)
++      {
++        gss_delete_sec_context(&minor, &ctxt, GSS_C_NO_BUFFER);
++      }
++      GSS_DBUG_ERROR(major, minor);
++      rc= CR_ERROR;
++      goto cleanup;
++    }
++    /* security context established (partially) */
++    have_ctxt= TRUE;
++
++    /* send token to peer */
++    if (output.length)
++    {
++      if (vio->write_packet(vio, (const uchar *) output.value, output.length))
++      {
++        gss_release_buffer(&minor, &output);
++        rc= CR_ERROR;
++        my_error(1, MYF(0),
++                 "Kerberos: fail to send authentication token.");
++        goto cleanup;
++      }
++      gss_release_buffer(&minor, &output);
++    }
++  } while (major & GSS_S_CONTINUE_NEEDED);
++
++  /* extract plain text client name */
++  major= gss_display_name(&minor, client_name, &client_name_buf, NULL);
++  if (major == GSS_S_BAD_NAME)
++  {
++    rc= CR_ERROR;
++    GSS_DBUG_ERROR(major, minor);
++    goto cleanup;
++  }
++
++  /* expected user? */
++  if (strncmp((const char *) client_name_buf.value, info->auth_string,
++              client_name_buf.length))
++  {
++    gss_release_buffer(&minor, &client_name_buf);
++    rc= CR_ERROR;
++    GSS_DBUG_ERROR(major, minor);
++    goto cleanup;
++  }
++  gss_release_buffer(&minor, &client_name_buf);
++  have_ctxt= FALSE; /* don't clear this */
++  ((MPVIO_EXT *)vio)->thd->net.vio->gss_ctxt= ctxt;
++  /*
++    vio will be reset later in login_connection() after completion of sending
++    the end statement.  End statement must be sent in the clear, since
++    otherwise our client would not know when to start encrypting.
++  */
++
++cleanup:
++  if (have_ctxt)
++    gss_delete_sec_context(&minor, &ctxt, GSS_C_NO_BUFFER);
++  if (have_cred)
++    gss_release_cred(&minor, &cred);
++
++  DBUG_RETURN(rc);
++}
++
++static int kerberos_authenticate(MYSQL_PLUGIN_VIO *vio,
++                                 MYSQL_SERVER_AUTH_INFO *info)
++{
++  DBUG_ENTER("kerberos_authenticate");
++
++  size_t p_len= 0; /* length of principal name */
++  int rc= CR_OK; /* return code */
++  char *principal_name= NULL;
++
++  /* server sends service principal name first. */
++  p_len= strlen(kerberos_principal_name_ptr);
++  if (!p_len)
++  {
++    my_error(1, MYF(0),
++             "Kerberos: no principal name specified.");
++    DBUG_RETURN(CR_ERROR);
++  }
++
++  if (vio->write_packet(vio, (unsigned char *) kerberos_principal_name_ptr,
++                        (int) p_len) < 0)
++  {
++    my_error(1, MYF(0),
++             "Kerberos: fail to send service principal name.");
++    DBUG_RETURN(CR_ERROR);
++  }
++
++  rc= gssapi_kerberos_auth(vio, info);
++
++  free(principal_name);
++
++  DBUG_RETURN(rc);
++}
++
++static struct st_mysql_auth kerberos_handler=
++{
++  MYSQL_AUTHENTICATION_INTERFACE_VERSION,
++  kerberos_plugin_name.str,
++  kerberos_authenticate
++};
++#endif /* HAVE_GSSAPI */
++
+ static struct st_mysql_auth native_password_handler=
+ {
+   MYSQL_AUTHENTICATION_INTERFACE_VERSION,
+@@ -12431,10 +12689,26 @@ maria_declare_plugin(mysql_password)
+   NULL,                                         /* system variables */
+   "1.0",                                        /* String version   */
+   MariaDB_PLUGIN_MATURITY_STABLE                /* Maturity         */
++},
++#ifdef HAVE_GSSAPI
++{
++  MYSQL_AUTHENTICATION_PLUGIN,                  /* type constant    */
++  &kerberos_handler,                            /* type descriptor  */
++  kerberos_plugin_name.str,                     /* Name             */
++  "Shuang Qiu, Monty Program Ab",               /* Author           */
++  "Kerberos-based aquthentication",             /* Description      */
++  PLUGIN_LICENSE_GPL,                           /* License          */
++  NULL,                                         /* Init function    */
++  NULL,                                         /* Deinit function  */
++  0x0100,                                       /* Version (1.0)    */
++  NULL,                                         /* status variables */
++  NULL,                                         /* system variables */
++  "1.0",                                        /* String version   */
++  MariaDB_PLUGIN_MATURITY_STABLE                /* Maturity         */
+ }
++#endif /* HAVE_GSSAPI */
+ maria_declare_plugin_end;
+ 
+-
+ /* called when new user is created or exsisting password is changed */
+ int check_password_policy(String *password)
+ {
+diff --git a/sql/sql_acl.h b/sql/sql_acl.h
+index 1aeb123..312318b 100644
+--- a/sql/sql_acl.h
++++ b/sql/sql_acl.h
+@@ -186,6 +186,11 @@ extern LEX_STRING current_user;
+ extern LEX_STRING current_role;
+ extern LEX_STRING current_user_and_current_role;
+ 
++#ifdef HAVE_GSSAPI
++/* system variables and manipulation thereof */
++extern char *kerberos_principal_name_ptr;
++extern char *kerberos_keytab_path_ptr;
++#endif /* HAVE_GSSAPI */
+ 
+ static inline int access_denied_error_code(int passwd_used)
+ {
+diff --git a/sql/sql_connect.cc b/sql/sql_connect.cc
+index 807b028..161bdb0 100644
+--- a/sql/sql_connect.cc
++++ b/sql/sql_connect.cc
+@@ -1143,6 +1143,20 @@ bool login_connection(THD *thd)
+     statistic_increment(aborted_connects,&LOCK_status);
+     DBUG_RETURN(1);
+   }
++
++#ifdef HAVE_GSSAPI
++  if (thd->net.vio->gss_ctxt != GSS_C_NO_CONTEXT)
++  {
++    /*
++      The auth handshake successfully used GSSAPI.  Additionally,
++      thd->protocol->end_statement() will flush, so it is okay to start
++      encrypting.
++    */
++    vio_reset(thd->net.vio, VIO_TYPE_GSSAPI,
++              mysql_socket_getfd(thd->net.vio->mysql_socket), NULL, 0);
++  }
++#endif /* HAVE_GSSAPI */
++
+   /* Connect completed, set read/write timeouts back to default */
+   my_net_set_read_timeout(net, thd->variables.net_read_timeout);
+   my_net_set_write_timeout(net, thd->variables.net_write_timeout);
+diff --git a/sql/sys_vars.cc b/sql/sys_vars.cc
+index f1942d0..a20649c 100644
+--- a/sql/sys_vars.cc
++++ b/sql/sys_vars.cc
+@@ -4812,3 +4812,20 @@ static Sys_var_mybool Sys_pseudo_slave_mode(
+        DEFAULT(my_getpagesize() * 6),
+        BLOCK_SIZE(my_getpagesize()));
+ #endif
++ 
++#ifdef HAVE_GSSAPI
++static Sys_var_charptr Sys_kerberos_principal_name(
++       "kerberos_principal_name",
++       "Kerberos principal used with GSSAPI "
++       "(e.g., MySql/myhost.domain@REALM.DOMAIN)",
++       GLOBAL_VAR(kerberos_principal_name_ptr),
++       CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(0));
++
++static Sys_var_charptr Sys_kerberos_keytab_path(
++       "kerberos_keytab_path",
++       "path to Kerberos keytab used with GSSAPI "
++       "(default to reading $KRB5_KTNAME)",
++       READ_ONLY GLOBAL_VAR(kerberos_keytab_path_ptr),
++       CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET,
++       DEFAULT(""));
++#endif /* HAVE_GSSAPI */
+diff --git a/vio/CMakeLists.txt b/vio/CMakeLists.txt
+index 2fb82ef..1df9170 100644
+--- a/vio/CMakeLists.txt
++++ b/vio/CMakeLists.txt
+@@ -14,12 +14,16 @@
+ # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+ 
+ INCLUDE_DIRECTORIES(${CMAKE_SOURCE_DIR}/include 
+-${SSL_INCLUDE_DIRS})
++  ${SSL_INCLUDE_DIRS}
++  ${GSSAPI_INCLUDE_DIRS}
++  )
+ ADD_DEFINITIONS(${SSL_DEFINES})
+ 
+-SET(VIO_SOURCES vio.c viosocket.c viossl.c viopipe.c vioshm.c viosslfactories.c)
++SET(VIO_SOURCES vio.c viosocket.c viossl.c viopipe.c vioshm.c
++  viosslfactories.c viogss.c)
+ ADD_CONVENIENCE_LIBRARY(vio ${VIO_SOURCES})
+-TARGET_LINK_LIBRARIES(vio ${LIBSOCKET})
++LINK_DIRECTORIES(${GSSAPI_LINK_DIRECTORIES})
++TARGET_LINK_LIBRARIES(vio ${LIBSOCKET} ${GSSAPI_LIBRARIES})
+ 
+ IF(MSVC)
+    INSTALL_DEBUG_TARGET(vio DESTINATION ${INSTALL_LIBDIR}/debug)
+diff --git a/vio/vio.c b/vio/vio.c
+index 97e3d49..9c43c7a 100644
+--- a/vio/vio.c
++++ b/vio/vio.c
+@@ -78,13 +78,28 @@ int vio_pipe_shutdown(Vio *vio, int how)
+ static void vio_init(Vio *vio, enum enum_vio_type type,
+                      my_socket sd, uint flags)
+ {
++#ifdef HAVE_GSSAPI
++  /* Need to preserve GSSAPI context, if available */
++  gss_ctx_id_t ctxt = vio->gss_ctxt;
++#endif /* HAVE_GSSAPI */
++
+   DBUG_ENTER("vio_init");
+   DBUG_PRINT("enter", ("type: %d  sd: %d  flags: %d", type, sd, flags));
+ 
+ #ifndef HAVE_VIO_READ_BUFF
+   flags&= ~VIO_BUFFERED_READ;
+ #endif
++
+   memset(vio, 0, sizeof(*vio));
++#ifdef HAVE_GSSAPI
++  /*
++    Only preserve GSSAPI contexts when they're properly initialized - which
++    will only occur when we're switching to GSSAPI.
++   */
++  if (type == VIO_TYPE_GSSAPI)
++    vio->gss_ctxt = ctxt;
++#endif /* HAVE_GSSAPI */
++
+   vio->type= type;
+   vio->mysql_socket= MYSQL_INVALID_SOCKET;
+   mysql_socket_setfd(&vio->mysql_socket, sd);
+@@ -160,6 +175,44 @@ static void vio_init(Vio *vio, enum enum_vio_type type,
+     DBUG_VOID_RETURN;
+   }
+ #endif /* HAVE_OPENSSL */
++#ifdef HAVE_GSSAPI
++  if (type == VIO_TYPE_GSSAPI)
++  {
++    if (!vio->read_buffer)
++    {
++      /* GSSAPI needs this buffer to do decryption */
++      vio->read_buffer =my_malloc(VIO_READ_BUFFER_SIZE, MYF(MY_WME));
++      if (!vio->read_buffer)
++      {
++        DBUG_PRINT("vio_init", ("malloc failure!"));
++        DBUG_ASSERT(0);
++      }
++      flags |= VIO_BUFFERED_READ;
++    }
++    /* see note in vio_gss_read() for how this works */
++    vio->read_pos       =vio->read_end = vio->read_buffer;
++
++    vio->viodelete      =vio_delete;
++    vio->vioerrno       =vio_errno;
++    vio->read           =vio_gss_read;
++    vio->write          =vio_gss_write;
++    vio->fastsend       =vio_fastsend;
++    vio->viokeepalive   =vio_keepalive;
++    vio->should_retry   =vio_should_retry;
++    vio->was_timeout    =vio_was_timeout;
++    vio->vioclose       =vio_gss_close;
++    vio->peer_addr      =vio_peer_addr;
++    vio->vioblocking    =vio_blocking;
++    vio->is_blocking    =vio_is_blocking;
++    vio->io_wait        =vio_io_wait;
++    vio->is_connected   =vio_is_connected;
++    vio->has_data       =vio_gss_has_data;
++    vio->shutdown       =vio_socket_shutdown;
++    vio->timeout        =vio_socket_timeout;
++    DBUG_VOID_RETURN;
++  }
++#endif /* HAVE_GSSAPI */
++  /* type == VIO_TYPE_TCPIP */
+   vio->viodelete        =vio_delete;
+   vio->vioerrno         =vio_errno;
+   vio->read=            (flags & VIO_BUFFERED_READ) ? vio_read_buff : vio_read;
+diff --git a/vio/vio_priv.h b/vio/vio_priv.h
+index 248e1a5..cfb6343 100644
+--- a/vio/vio_priv.h
++++ b/vio/vio_priv.h
+@@ -20,6 +20,7 @@
+ /* Structures and functions private to the vio package */
+ 
+ #define DONT_MAP_VIO
++#include <config.h>
+ #include <my_global.h>
+ #include <mysql_com.h>
+ #include <my_sys.h>
+@@ -62,4 +63,11 @@ int vio_ssl_blocking(Vio *vio, my_bool set_blocking_mode, my_bool *old_mode);
+ my_bool vio_ssl_has_data(Vio *vio);
+ 
+ #endif /* HAVE_OPENSSL */
++
++#ifdef HAVE_GSSAPI
++size_t vio_gss_read(Vio *vio, uchar *buf, size_t size);
++size_t vio_gss_write(Vio *vio, const uchar *buf, size_t size);
++int vio_gss_close(Vio *vio);
++my_bool vio_gss_has_data(Vio *vio);
++#endif /* HAVE_GSSAPI */
+ #endif /* VIO_PRIV_INCLUDED */
+diff --git a/vio/viogss.c b/vio/viogss.c
+new file mode 100644
+index 0000000..4a7b3b5
+--- /dev/null
++++ b/vio/viogss.c
+@@ -0,0 +1,220 @@
++/*
++  Copyright (c) 2015 Red Hat, Inc.
++  Copyright (c) 2015 Robbie Harwood <rharwood@redhat.com>
++
++  Permission to use, copy, modify, and/or distribute this software for
++  any purpose with or without fee is hereby granted, provided that the
++  above copyright notice and this permission notice appear in all
++  copies.
++
++  THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
++  WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
++  WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE
++  AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL
++  DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA
++  OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
++  TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
++  PERFORMANCE OF THIS SOFTWARE.
++*/
++
++#include "vio_priv.h"
++#include "my_context.h"
++#include <mysql_async.h>
++
++#ifdef HAVE_GSSAPI
++
++static size_t vio_gss_dump_plaintext(Vio *me, uchar *buf, size_t n)
++{
++  size_t get;
++
++  DBUG_ENTER("vio_gss_dump_plaintext");
++
++  /* a packet is decrypted and ready to go */
++  get = MY_MIN(n, (size_t) (me->read_pos - me->read_buffer));
++  memcpy(buf, me->read_buffer, get);
++  memmove(me->read_buffer, me->read_buffer + get,
++          me->read_end - me->read_buffer - get);
++  me->read_pos -= get;
++  me->read_end -= get;
++  DBUG_RETURN(get);
++}
++
++/* Always buffered */
++size_t vio_gss_read(Vio *me, uchar *buf, size_t n)
++{
++  /*
++    vio->read_buffer: start of buffer
++    vio->read_pos: start of encrypted data
++    vio->read_end: current insertion point
++  */
++  ssize_t len, missing;
++  size_t packet_size;
++  OM_uint32 major, minor;
++  gss_buffer_desc input, output;
++  int conf;
++
++  DBUG_ENTER("vio_gss_read");
++  
++  if (vio_gss_has_data(me))
++  {
++    len = vio_gss_dump_plaintext(me, buf, n);
++    DBUG_RETURN(len);
++  }
++
++  missing = me->read_pos + 4 - me->read_end;
++  if (missing > 0)
++  {
++    /* we need to get the length */
++    len = vio_read(me, (uchar *) me->read_end, missing);
++    if (len < 0)
++    {
++      /* error already logged from vio_read */
++      DBUG_RETURN(len);
++    }
++    me->read_end += len;
++    missing = me->read_pos + 4 - me->read_end;
++    if (missing > 0)
++      DBUG_RETURN(0);
++  }
++
++  /* we now have the length */
++  memcpy(&packet_size, me->read_pos, 4);
++  packet_size = ntohl(packet_size);
++  if (packet_size > VIO_READ_BUFFER_SIZE - 4)
++  {
++    DBUG_PRINT("vio_gss_read",
++               ("declared packet size larger than read buffer!"));
++    DBUG_RETURN(-1);
++  }
++
++  missing = me->read_pos + packet_size + 4 - me->read_end;
++  if (missing > 0)
++  {
++    /* try to get the rest of the packet */
++    len = vio_read(me, (uchar *) me->read_end, missing);
++    if (len < 0)
++    {
++      /* error already logged from vio_read */
++      DBUG_RETURN(len);
++    }
++    me->read_end += len;
++    missing = me->read_pos + packet_size + 4 - me->read_end;
++    if (missing > 0)
++      DBUG_RETURN(0);
++  }
++
++  /* we now have a full packet ready to decrypt */
++  input.value = me->read_buffer + 4;
++  input.length = packet_size;
++  major = gss_unwrap(&minor, me->gss_ctxt, &input, &output, &conf, NULL);
++  if (GSS_ERROR(major))
++  {
++    GSS_DBUG_ERROR(major, minor);
++    DBUG_RETURN(-1);
++  }
++  else if (conf == 0)
++  {
++    DBUG_PRINT("vio_gss_read", ("GSSAPI failed to provide confidentiality!"));
++    DBUG_RETURN(-1);
++  }
++
++  memcpy(me->read_buffer, output.value, output.length);
++  me->read_pos = me->read_end = me->read_buffer + output.length;
++  gss_release_buffer(&minor, &output);
++
++  len = vio_gss_dump_plaintext(me, buf, n);
++  DBUG_RETURN(len);
++}
++
++size_t vio_gss_write(Vio *me, const uchar *buf, size_t len)
++{
++  OM_uint32 major, minor;
++  gss_buffer_desc input, output;
++  int conf;
++  uchar *send_buf;
++  uint32 packetlen;
++  ssize_t ret;
++
++  DBUG_ENTER("vio_gss_write");
++  
++  /* 
++     Pre-compute what this looks like encrypted.
++
++     The type of a gss_buffer_t does not allow specification of the input
++     buffer as const, but it will not modify the contents of this buffer as
++     per rfc2744.
++  */
++  input.value = (uchar *) buf;
++  input.length = len;
++
++  major = gss_wrap(&minor, me->gss_ctxt, 1, GSS_C_QOP_DEFAULT, &input,
++                   &conf, &output);
++  if (GSS_ERROR(major))
++  {
++    GSS_DBUG_ERROR(major, minor);
++    DBUG_RETURN(-1);
++  }
++  else if (!conf)
++  {
++    DBUG_PRINT("vio_gss_write", ("GSSAPI did not receive confidentiality!"));
++    DBUG_RETURN(-1);
++  }
++
++  /*
++    It "should be" faster to hit malloc here than to do two sends.
++
++    Additionally, we need four bytes for length because GSS-encrypted
++    packets can be larger, and it's valid to ask for a maxlen packet
++    to be encrypted.
++
++    Though the underlying buffer in output.value is allocated using malloc(),
++    we cannot count on this behavior as it is not mandated by rfc2744.
++  */
++  send_buf = malloc(output.length + 4);
++  if (!send_buf)
++  {
++    DBUG_PRINT("vio_error", ("Failed to malloc!"));
++    DBUG_RETURN(errno);
++  }
++  packetlen = htonl(output.length);
++  memcpy(send_buf, &packetlen, 4);
++  memcpy(send_buf + 4, output.value, output.length);
++
++  /*
++    Mandatory blocking here.  What we consider a "packet" does not match what
++    our caller considers a packet, since encryption increases the length.
++  */
++  ret = mysql_socket_send(me->mysql_socket, (SOCKBUF_T *) send_buf,
++                          output.length + 4, 0);
++  major = gss_release_buffer(&minor, &output);
++  if (htonl(ret - 4) == packetlen)
++    DBUG_RETURN(len);
++  else if (ret < 0)
++    DBUG_RETURN(ret);
++  else
++    DBUG_ASSERT(0);
++}
++
++int vio_gss_close(Vio *me)
++{
++  OM_uint32 minor;
++
++  DBUG_ENTER("vio_gss_close");
++  
++  if (me->gss_ctxt != GSS_C_NO_CONTEXT)
++  {
++    gss_delete_sec_context(&minor, &me->gss_ctxt, GSS_C_NO_BUFFER);
++    me->gss_ctxt = GSS_C_NO_CONTEXT;
++  }
++
++  DBUG_RETURN(vio_close(me));
++}
++
++my_bool vio_gss_has_data(Vio *me)
++{
++  DBUG_ENTER("vio_gss_has_data");
++
++  DBUG_RETURN(me->read_buffer != me->read_pos);
++}
++
++#endif /* HAVE_GSSAPI */
+diff --git a/vio/viosocket.c b/vio/viosocket.c
+index 5576dfc..0bfb144 100644
+--- a/vio/viosocket.c
++++ b/vio/viosocket.c
+@@ -146,8 +146,15 @@ size_t vio_read(Vio *vio, uchar *buf, size_t size)
+                        mysql_socket_getfd(vio->mysql_socket), buf,
+                        (int) size));
+ 
+-  /* Ensure nobody uses vio_read_buff and vio_read simultaneously. */
+-  DBUG_ASSERT(vio->read_end == vio->read_pos);
++  /*
++    Ensure nobody uses vio_read_buff and vio_read simultaneously.
++    Viogss uses these buffers differently, and so is an exception.
++  */
++  DBUG_ASSERT(
++#ifdef HAVE_GSSAPI
++    vio->read == vio_gss_read ||
++#endif
++    vio->read_end == vio->read_pos);
+ 
+   /* If timeout is enabled, do not block if data is unavailable. */
+   if (vio->read_timeout >= 0)
+@@ -597,7 +604,8 @@ int vio_close(Vio *vio)
+   {
+     DBUG_ASSERT(vio->type ==  VIO_TYPE_TCPIP ||
+       vio->type == VIO_TYPE_SOCKET ||
+-      vio->type == VIO_TYPE_SSL);
++      vio->type == VIO_TYPE_SSL ||
++      vio->type == VIO_TYPE_GSSAPI);
+ 
+     DBUG_ASSERT(mysql_socket_getfd(vio->mysql_socket) >= 0);
+     if (mysql_socket_shutdown(vio->mysql_socket, SHUT_RDWR))

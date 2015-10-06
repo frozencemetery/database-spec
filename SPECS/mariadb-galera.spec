@@ -1,5 +1,6 @@
 # Name of the package without any prefixes
-%global pkgname      mariadb-galera
+%global pkg_name %{name}
+%global pkg_name_shared mariadb
 %global pkgnamepatch mariadb
 
 # Regression tests may take a long time (many cores recommended), skip them by 
@@ -8,7 +9,8 @@
 %{!?runselftest:%global runselftest 0}
 
 # In f20+ use unversioned docdirs, otherwise the old versioned one
-%{!?_pkgdocdir: %global _pkgdocdir %{_docdir}/%{name}-%{version}}
+%global _pkgdocdirname %{pkg_name}%{!?_pkgdocdir:-%{version}}
+%{!?_pkgdocdir: %global _pkgdocdir %{_docdir}/%{pkg_name}-%{version}}
 
 # use Full RELRO for all binaries (RHBZ#1092548)
 %global _hardened_build 1
@@ -21,6 +23,10 @@
 # variable tokudb allows to build with TokuDB storage engine
 # Disabled for galera since only InnoDB works there
 %bcond_with tokudb
+
+# Mroonga engine is now part of MariaDB, but it only builds for x86_64;
+# variable mroonga allows to build with Mroonga storage engine
+%bcond_with mroonga
 
 # The Open Query GRAPH engine (OQGRAPH) is a computation engine allowing
 # hierarchies and more complex graph structures to be handled in a relational
@@ -51,10 +57,12 @@
 %bcond_without init_systemd
 %bcond_with init_sysv
 %global daemon_name mariadb
+%global daemondir %{_unitdir}
 %else
 %bcond_with init_systemd
 %bcond_without init_sysv
 %global daemon_name mysqld
+%global daemondir %{_sysconfdir}/rc.d/init.d
 %endif
 
 # MariaDB 10.0 and later requires pcre >= 8.35, otherwise we need to use
@@ -70,6 +78,7 @@
 %global logrotateddir %{_sysconfdir}/logrotate.d
 %global logfiledir %{_localstatedir}/log/%{daemon_name}
 %global logfile %{logfiledir}/%{daemon_name}.log
+%global dbdatadir %{_localstatedir}/lib/mysql
 
 # Home directory of mysql user should be same for all packages that create it
 %global mysqluserhome /var/lib/mysql
@@ -100,11 +109,11 @@
 # Make long macros shorter
 %global sameevr   %{epoch}:%{version}-%{release}
 %global compatver 10.0
-%global bugfixver 13
+%global bugfixver 17
 
-Name:             %{pkgname}
+Name:             mariadb-galera
 Version:          %{compatver}.%{bugfixver}
-Release:          28%{?with_debug:.debug}%{?dist}
+Release:          7%{?with_debug:.debug}%{?dist}
 Epoch:            1
 
 Summary:          A community developed branch of MySQL
@@ -118,7 +127,7 @@ License:          GPLv2 with exceptions and LGPLv2 and BSD
 # to build mariadb-galera on other architectures (#1092068)
 ExclusiveArch: %{ix86} x86_64 %{arm} aarch64
 
-Source0:          http://ftp.osuosl.org/pub/mariadb/%{pkgname}-%{version}/src/%{pkgname}-%{version}.tar.gz
+Source0:          http://ftp.osuosl.org/pub/mariadb/%{pkg_name}-%{version}/src/%{pkg_name}-%{version}.tar.gz
 Source2:          mysql_config_multilib.sh
 Source3:          my.cnf.in
 Source4:          my_config.h
@@ -137,11 +146,8 @@ Source17:         mysql-compat.service.in
 Source18:         mysql-compat.conf.in
 Source19:         mysql.init.in
 Source50:         rh-skipped-tests-base.list
-Source51:         rh-skipped-tests-intel.list
-Source52:         rh-skipped-tests-arm.list
-Source53:         rh-skipped-tests-ppc-s390.list
-Source54:         rh-skipped-tests-ppc64le.list
-Source55:         rh-skipped-tests-s390.list
+Source51:         rh-skipped-tests-arm.list
+Source52:         rh-skipped-tests-ppc-s390.list
 # TODO: clustercheck contains some hard-coded paths, these should be expanded using template system
 Source70:         clustercheck.sh
 Source71:         LICENSE.clustercheck
@@ -152,11 +158,10 @@ Patch1:           %{pkgnamepatch}-strmov.patch
 Patch2:           %{pkgnamepatch}-install-test.patch
 Patch3:           %{pkgnamepatch}-s390-tsc.patch
 Patch4:           %{pkgnamepatch}-logrotate.patch
-Patch5:           %{pkgnamepatch}-cipherspec.patch
-Patch6:           %{pkgnamepatch}-file-contents.patch
-Patch7:           %{pkgnamepatch}-dh1024.patch
-Patch8:           %{pkgnamepatch}-scripts.patch
-Patch9:           %{pkgnamepatch}-install-db-sharedir.patch
+Patch5:           %{pkgnamepatch}-file-contents.patch
+Patch6:           %{pkgnamepatch}-dh1024.patch
+Patch7:           %{pkgnamepatch}-scripts.patch
+Patch8:           %{pkgnamepatch}-install-db-sharedir.patch
 
 # Patches specific for this mysql package
 Patch30:          %{pkgnamepatch}-errno.patch
@@ -167,7 +172,7 @@ Patch34:          %{pkgnamepatch}-covscan-stroverflow.patch
 Patch35:          %{pkgnamepatch}-config.patch
 Patch36:          %{pkgnamepatch}-ssltest.patch
 
-Patch99:          gssapi_enc_backport.patch
+Patch99:          galera-enc.patch
 
 BuildRequires:    cmake
 BuildRequires:    libaio-devel
@@ -195,7 +200,6 @@ BuildRequires:    perl(Sys::Hostname)
 BuildRequires:    perl(Test::More)
 BuildRequires:    perl(Time::HiRes)
 %{?with_init_systemd:BuildRequires: systemd}
-BuildRequires:    krb5-devel
 
 Requires:         bash
 Requires:         fileutils
@@ -530,7 +534,6 @@ MariaDB is a community developed branch of MySQL.
 %patch6 -p1
 %patch7 -p1
 %patch8 -p1
-%patch9 -p1
 %patch30 -p1
 %patch31 -p1
 %patch32 -p1
@@ -550,24 +553,12 @@ rm -f mysql-test/t/ssl_8k_key-master.opt
 cat %{SOURCE50} > mysql-test/rh-skipped-tests.list
 
 # disable some tests failing on different architectures
-%ifarch x86_64 i686
-cat %{SOURCE51} >> mysql-test/rh-skipped-tests.list
-%endif
-
 %ifarch %{arm} aarch64
-cat %{SOURCE52} >> mysql-test/rh-skipped-tests.list
+cat %{SOURCE51} | tee -a mysql-test/rh-skipped-tests.list
 %endif
 
 %ifarch ppc ppc64 ppc64p7 s390 s390x
-cat %{SOURCE53} >> mysql-test/rh-skipped-tests.list
-%endif
-
-%ifarch ppc64le
-cat %{SOURCE54} >> mysql-test/rh-skipped-tests.list
-%endif
-
-%ifarch s390
-cat %{SOURCE55} >> mysql-test/rh-skipped-tests.list
+cat %{SOURCE52} | tee -a mysql-test/rh-skipped-tests.list
 %endif
 
 cp %{SOURCE2} %{SOURCE3} %{SOURCE10} %{SOURCE11} %{SOURCE12} %{SOURCE13} \
@@ -629,26 +620,21 @@ export LDFLAGS
          -DCMAKE_INSTALL_PREFIX="%{_prefix}" \
          -DINSTALL_SYSCONFDIR="%{_sysconfdir}" \
          -DINSTALL_SYSCONF2DIR="%{_sysconfdir}/my.cnf.d" \
-%if 0%{?fedora} >= 20
-         -DINSTALL_DOCDIR="share/doc/%{name}" \
-         -DINSTALL_DOCREADMEDIR="share/doc/%{name}" \
-%else
-         -DINSTALL_DOCDIR="share/doc/%{name}-%{version}" \
-         -DINSTALL_DOCREADMEDIR="share/doc/%{name}-%{version}" \
-%endif
+         -DINSTALL_DOCDIR="share/doc/%{_pkgdocdirname}" \
+         -DINSTALL_DOCREADMEDIR="share/doc/%{_pkgdocdirname}" \
          -DINSTALL_INCLUDEDIR=include/mysql \
          -DINSTALL_INFODIR=share/info \
          -DINSTALL_LIBDIR="%{_lib}/mysql" \
          -DINSTALL_MANDIR=share/man \
-         -DINSTALL_MYSQLSHAREDIR=share/%{datadirname} \
+         -DINSTALL_MYSQLSHAREDIR=share/%{pkg_name_shared} \
          -DINSTALL_MYSQLTESTDIR=share/mysql-test \
          -DINSTALL_PLUGINDIR="%{_lib}/mysql/plugin" \
          -DINSTALL_SBINDIR=libexec \
          -DINSTALL_SCRIPTDIR=bin \
          -DINSTALL_SQLBENCHDIR=share \
-         -DINSTALL_SUPPORTFILESDIR=share/%{name} \
-         -DMYSQL_DATADIR="%{_localstatedir}/lib/mysql" \
-         -DMYSQL_UNIX_ADDR="%{_localstatedir}/lib/mysql/mysql.sock" \
+         -DINSTALL_SUPPORTFILESDIR=share/%{pkg_name_shared} \
+         -DMYSQL_DATADIR="%{dbdatadir}" \
+         -DMYSQL_UNIX_ADDR="/var/lib/mysql/mysql.sock" \
          -DENABLED_LOCAL_INFILE=ON \
          -DENABLE_DTRACE=ON \
          -DWITH_EMBEDDED_SERVER=ON \
@@ -657,6 +643,7 @@ export LDFLAGS
 %{?with_pcre: -DWITH_PCRE=system}\
          -DWITH_JEMALLOC=no \
 %{!?with_tokudb: -DWITHOUT_TOKUDB=ON}\
+%{!?with_mroonga: -DWITHOUT_MROONGA=ON}\
          -DTMPDIR=/var/tmp \
 %{?with_debug: -DCMAKE_BUILD_TYPE=Debug}\
          %{?_hardened_build:-DWITH_MYSQLD_LDFLAGS="-pie -Wl,-z,relro,-z,now"}
@@ -704,8 +691,8 @@ install -p -m 0755 scripts/mysql_config_multilib %{buildroot}%{_bindir}/mysql_co
 
 # install INFO_SRC, INFO_BIN into libdir (upstream thinks these are doc files,
 # but that's pretty wacko --- see also %%{name}-file-contents.patch)
-mv %{buildroot}%{_pkgdocdir}/MariaDB-Galera-server-%{version}/INFO_SRC %{buildroot}%{_libdir}/mysql/
-mv %{buildroot}%{_pkgdocdir}/MariaDB-Galera-server-%{version}/INFO_BIN %{buildroot}%{_libdir}/mysql/
+install -p -m 644 Docs/INFO_SRC %{buildroot}%{_libdir}/mysql/
+install -p -m 644 Docs/INFO_BIN %{buildroot}%{_libdir}/mysql/
 rm -rf %{buildroot}%{_pkgdocdir}/MariaDB-Galera-server-%{version}/
 
 mkdir -p %{buildroot}%{logfiledir}
@@ -731,7 +718,7 @@ rm -f %{buildroot}%{_sysconfdir}/my.cnf
 
 # install systemd unit files and scripts for handling server startup
 %if %{with init_systemd}
-install -D -p -m 644 scripts/mysql.service %{buildroot}%{_unitdir}/%{daemon_name}.service
+install -D -p -m 644 scripts/mysql.service %{buildroot}%{daemondir}/%{daemon_name}.service
 install -D -p -m 0644 scripts/mysql.tmpfiles.d %{buildroot}%{_tmpfilesdir}/%{name}.conf
 %endif
 
@@ -772,18 +759,18 @@ ln -s ../../../../../bin/my_safe_process %{buildroot}%{_datadir}/mysql-test/lib/
 # should move this to /etc/ ?
 rm -f %{buildroot}%{_bindir}/mysql_embedded
 rm -f %{buildroot}%{_libdir}/mysql/*.a
-rm -f %{buildroot}%{_datadir}/%{name}/binary-configure
-rm -f %{buildroot}%{_datadir}/%{name}/magic
-rm -f %{buildroot}%{_datadir}/%{name}/ndb-config-2-node.ini
-rm -f %{buildroot}%{_datadir}/%{name}/mysql.server
-rm -f %{buildroot}%{_datadir}/%{name}/mysqld_multi.server
+rm -f %{buildroot}%{_datadir}/%{pkg_name_shared}/binary-configure
+rm -f %{buildroot}%{_datadir}/%{pkg_name_shared}/magic
+rm -f %{buildroot}%{_datadir}/%{pkg_name_shared}/ndb-config-2-node.ini
+rm -f %{buildroot}%{_datadir}/%{pkg_name_shared}/mysql.server
+rm -f %{buildroot}%{_datadir}/%{pkg_name_shared}/mysqld_multi.server
 rm -f %{buildroot}%{_mandir}/man1/mysql-stress-test.pl.1*
 rm -f %{buildroot}%{_mandir}/man1/mysql-test-run.pl.1*
 rm -f %{buildroot}%{_bindir}/mytop
 
 # put logrotate script where it needs to be
 mkdir -p %{buildroot}%{logrotateddir}
-mv %{buildroot}%{_datadir}/%{name}/mysql-log-rotate %{buildroot}%{logrotateddir}/%{daemon_name}
+mv %{buildroot}%{_datadir}/%{pkg_name_shared}/mysql-log-rotate %{buildroot}%{logrotateddir}/%{daemon_name}
 chmod 644 %{buildroot}%{logrotateddir}/%{daemon_name}
 
 mkdir -p %{buildroot}%{_sysconfdir}/ld.so.conf.d
@@ -808,7 +795,7 @@ install -p -m 0755 scripts/clustercheck %{buildroot}%{_bindir}/clustercheck
 install -p -m 0644 mysql-test/rh-skipped-tests.list %{buildroot}%{_datadir}/mysql-test
 
 # remove unneeded RHEL-4 SELinux stuff
-rm -rf %{buildroot}%{_datadir}/%{name}/SELinux/
+rm -rf %{buildroot}%{_datadir}/%{pkg_name_shared}/SELinux/
 
 # remove SysV init script
 rm -f %{buildroot}%{_sysconfdir}/init.d/mysql
@@ -817,7 +804,7 @@ rm -f %{buildroot}%{_sysconfdir}/init.d/mysql
 rm -f %{buildroot}%{_sysconfdir}/logrotate.d/mysql
 
 # remove solaris files
-rm -rf %{buildroot}%{_datadir}/%{name}/solaris/
+rm -rf %{buildroot}%{_datadir}/%{pkg_name_shared}/solaris/
 
 # rename the wsrep README so it corresponds with the other README names
 mv Docs/README-wsrep Docs/README.wsrep
@@ -861,12 +848,12 @@ rm -f %{buildroot}%{_sysconfdir}/my.cnf.d/mysql-clients.cnf
 %endif
 
 %if %{without common}
-rm -rf %{buildroot}%{_datadir}/%{datadirname}/charsets
+rm -rf %{buildroot}%{_datadir}/%{pkg_name_shared}/charsets
 %endif
 
 %if %{without errmsg}
-rm -f %{buildroot}%{_datadir}/%{datadirname}/errmsg-utf8.txt
-rm -rf %{buildroot}%{_datadir}/%{datadirname}/{english,czech,danish,dutch,estonian,\
+rm -f %{buildroot}%{_datadir}/%{pkg_name_shared}/errmsg-utf8.txt
+rm -rf %{buildroot}%{_datadir}/%{pkg_name_shared}/{english,czech,danish,dutch,estonian,\
 french,german,greek,hungarian,italian,japanese,korean,norwegian,norwegian-ny,\
 polish,portuguese,romanian,russian,serbian,slovak,spanish,swedish,ukrainian}
 %endif
@@ -1049,36 +1036,37 @@ fi
 %files common
 %doc README COPYING COPYING.LESSER README.mysql-license
 %doc storage/innobase/COPYING.Percona storage/innobase/COPYING.Google
-%dir %{_datadir}/%{datadirname}
-%{_datadir}/%{datadirname}/charsets
+%dir %{_libdir}/mysql
+%dir %{_datadir}/%{pkg_name_shared}
+%{_datadir}/%{pkg_name_shared}/charsets
 %endif
 
 %if %{with errmsg}
 %files errmsg
-%{_datadir}/%{datadirname}/errmsg-utf8.txt
-%{_datadir}/%{datadirname}/english
-%lang(cs) %{_datadir}/%{datadirname}/czech
-%lang(da) %{_datadir}/%{datadirname}/danish
-%lang(nl) %{_datadir}/%{datadirname}/dutch
-%lang(et) %{_datadir}/%{datadirname}/estonian
-%lang(fr) %{_datadir}/%{datadirname}/french
-%lang(de) %{_datadir}/%{datadirname}/german
-%lang(el) %{_datadir}/%{datadirname}/greek
-%lang(hu) %{_datadir}/%{datadirname}/hungarian
-%lang(it) %{_datadir}/%{datadirname}/italian
-%lang(ja) %{_datadir}/%{datadirname}/japanese
-%lang(ko) %{_datadir}/%{datadirname}/korean
-%lang(no) %{_datadir}/%{datadirname}/norwegian
-%lang(no) %{_datadir}/%{datadirname}/norwegian-ny
-%lang(pl) %{_datadir}/%{datadirname}/polish
-%lang(pt) %{_datadir}/%{datadirname}/portuguese
-%lang(ro) %{_datadir}/%{datadirname}/romanian
-%lang(ru) %{_datadir}/%{datadirname}/russian
-%lang(sr) %{_datadir}/%{datadirname}/serbian
-%lang(sk) %{_datadir}/%{datadirname}/slovak
-%lang(es) %{_datadir}/%{datadirname}/spanish
-%lang(sv) %{_datadir}/%{datadirname}/swedish
-%lang(uk) %{_datadir}/%{datadirname}/ukrainian
+%{_datadir}/%{pkg_name_shared}/errmsg-utf8.txt
+%{_datadir}/%{pkg_name_shared}/english
+%lang(cs) %{_datadir}/%{pkg_name_shared}/czech
+%lang(da) %{_datadir}/%{pkg_name_shared}/danish
+%lang(nl) %{_datadir}/%{pkg_name_shared}/dutch
+%lang(et) %{_datadir}/%{pkg_name_shared}/estonian
+%lang(fr) %{_datadir}/%{pkg_name_shared}/french
+%lang(de) %{_datadir}/%{pkg_name_shared}/german
+%lang(el) %{_datadir}/%{pkg_name_shared}/greek
+%lang(hu) %{_datadir}/%{pkg_name_shared}/hungarian
+%lang(it) %{_datadir}/%{pkg_name_shared}/italian
+%lang(ja) %{_datadir}/%{pkg_name_shared}/japanese
+%lang(ko) %{_datadir}/%{pkg_name_shared}/korean
+%lang(no) %{_datadir}/%{pkg_name_shared}/norwegian
+%lang(no) %{_datadir}/%{pkg_name_shared}/norwegian-ny
+%lang(pl) %{_datadir}/%{pkg_name_shared}/polish
+%lang(pt) %{_datadir}/%{pkg_name_shared}/portuguese
+%lang(ro) %{_datadir}/%{pkg_name_shared}/romanian
+%lang(ru) %{_datadir}/%{pkg_name_shared}/russian
+%lang(sr) %{_datadir}/%{pkg_name_shared}/serbian
+%lang(sk) %{_datadir}/%{pkg_name_shared}/slovak
+%lang(es) %{_datadir}/%{pkg_name_shared}/spanish
+%lang(sv) %{_datadir}/%{pkg_name_shared}/swedish
+%lang(uk) %{_datadir}/%{pkg_name_shared}/ukrainian
 %endif
 
 %files server
@@ -1132,7 +1120,7 @@ fi
 %{_libdir}/mysql/INFO_SRC
 %{_libdir}/mysql/INFO_BIN
 %if %{without common}
-%dir %{_datadir}/%{datadirname}
+%dir %{_datadir}/%{pkg_name_shared}
 %endif
 
 %{_libdir}/mysql/plugin
@@ -1172,20 +1160,21 @@ fi
 %{_mandir}/man1/mysql_tzinfo_to_sql.1*
 %{_mandir}/man8/mysqld.8*
 
-%{_datadir}/%{datadirname}/fill_help_tables.sql
-%{_datadir}/%{datadirname}/install_spider.sql
-%{_datadir}/%{datadirname}/mysql_system_tables.sql
-%{_datadir}/%{datadirname}/mysql_system_tables_data.sql
-%{_datadir}/%{datadirname}/mysql_test_data_timezone.sql
-%{_datadir}/%{datadirname}/mysql_performance_tables.sql
-%{_datadir}/%{name}/my-*.cnf
-%{_datadir}/%{name}/wsrep.cnf
-%{_datadir}/%{name}/wsrep_notify
+%{_datadir}/%{pkg_name_shared}/fill_help_tables.sql
+%{_datadir}/%{pkg_name_shared}/install_spider.sql
+%{_datadir}/%{pkg_name_shared}/mysql_system_tables.sql
+%{_datadir}/%{pkg_name_shared}/mysql_system_tables_data.sql
+%{_datadir}/%{pkg_name_shared}/mysql_test_data_timezone.sql
+%{_datadir}/%{pkg_name_shared}/mysql_performance_tables.sql
+%{?with_mroonga:%{_datadir}/%{pkg_name_shared}/mroonga/install.sql}
+%{?with_mroonga:%{_datadir}/%{pkg_name_shared}/mroonga/uninstall.sql}
+%{_datadir}/%{pkg_name_shared}/my-*.cnf
+%{_datadir}/%{pkg_name_shared}/wsrep.cnf
+%{_datadir}/%{pkg_name_shared}/wsrep_notify
 
 %{?mysqld_unit:%{_unitdir}/%{mysqld_unit}.service}
 %{?mysqld_unit:%{_unitdir}/%{daemon_name}.service.d/mysql-compat.conf}
-%{?with_init_systemd:%{_unitdir}/%{daemon_name}.service}
-%{?with_init_sysv:%{_initddir}/%{daemon_name}}
+%{daemondir}/%{daemon_name}*
 %{_libexecdir}/mysql-prepare-db-dir
 %{_libexecdir}/mysql-wait-ready
 %{_libexecdir}/mysql-check-socket
@@ -1252,12 +1241,22 @@ fi
 %endif
 
 %changelog
-* Fri Oct 02 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.13-28
-- BuildRequires on krb5-devel
+* Tue Oct 06 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-7
+- GSSAPI
 
-* Fri Oct 02 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.13-27
-- Backport gssapi enc
-- Disable test suite
+* Fri Oct 02 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-6
+- Disable self-test
+
+* Wed Apr 01 2015 Honza Horak <hhorak@redhat.com> - 1:10.0.17-3
+- Fix path to files shared with mariadb
+
+* Wed Mar 11 2015 Honza Horak <hhorak@redhat.com> - 1:10.0.17-1
+- Rebase to version 10.0.17
+- Rework disabled tests handling
+- Fix openssl_1 test
+
+* Sat Jan 24 2015 Honza Horak <hhorak@redhat.com> - 1:10.0.15-1
+- Rebase to version 10.0.15
 
 * Thu Dec  4 2014 Peter Robinson <pbrobinson@fedoraproject.org> 1:10.0.13-7
 - Build on aarch64 now we have galera
