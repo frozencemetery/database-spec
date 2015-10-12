@@ -84,9 +84,7 @@
 %global logrotateddir %{_sysconfdir}/logrotate.d
 %global logfiledir %{_localstatedir}/log/%{daemon_name}
 %global logfile %{logfiledir}/%{daemon_name}.log
-%if 0%{?fedora} >= 20
 %global old_logfile %{_localstatedir}/log/mysqld.log
-%endif
 
 # Defining where database data live
 %global dbdatadir %{_localstatedir}/lib/mysql
@@ -118,7 +116,7 @@
 
 Name:             mariadb
 Version:          %{compatver}.%{bugfixver}
-Release:          2%{?with_debug:.debug}%{?dist}
+Release:          4%{?with_debug:.debug}%{?dist}
 Epoch:            1
 
 Summary:          A community developed branch of MySQL
@@ -170,6 +168,8 @@ Patch34:          %{pkgnamepatch}-covscan-stroverflow.patch
 Patch35:          %{pkgnamepatch}-config.patch
 Patch36:          %{pkgnamepatch}-ssltest.patch
 
+Patch99:          nogalera.patch
+
 BuildRequires:    cmake
 BuildRequires:    libaio-devel
 BuildRequires:    openssl-devel
@@ -195,6 +195,7 @@ BuildRequires:    perl(Socket)
 BuildRequires:    perl(Sys::Hostname)
 BuildRequires:    perl(Test::More)
 BuildRequires:    perl(Time::HiRes)
+BuildRequires:    krb5-devel
 %{?with_init_systemd:BuildRequires: systemd}
 
 Requires:         bash
@@ -505,6 +506,8 @@ MariaDB is a community developed branch of MySQL.
 %patch34 -p1
 %patch35 -p1
 %patch36 -p1
+
+%patch99 -p1
 
 # removing bundled cmd-line-utils
 rm -r cmd-line-utils
@@ -1187,6 +1190,12 @@ fi
 %endif
 
 %changelog
+* Mon Oct 12 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-4
+- Fid literal variable old_logdir appearing in conf file on rhel
+
+* Tue Oct 06 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-3
+- Pile on the crypto
+
 * Tue Oct 06 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-2
 - Disable the self-test
 
