@@ -113,7 +113,7 @@
 
 Name:             mariadb-galera
 Version:          %{compatver}.%{bugfixver}
-Release:          7%{?with_debug:.debug}%{?dist}
+Release:          8%{?with_debug:.debug}%{?dist}
 Epoch:            1
 
 Summary:          A community developed branch of MySQL
@@ -199,6 +199,7 @@ BuildRequires:    perl(Socket)
 BuildRequires:    perl(Sys::Hostname)
 BuildRequires:    perl(Test::More)
 BuildRequires:    perl(Time::HiRes)
+BuildRequires:    krb5-devel
 %{?with_init_systemd:BuildRequires: systemd}
 
 Requires:         bash
@@ -1241,6 +1242,9 @@ fi
 %endif
 
 %changelog
+* Tue Oct 06 2015 Robbie Harwood <rharowod@redhat.com> - 1:10.0.17-8
+- Accidentally the buildrequires
+
 * Tue Oct 06 2015 Robbie Harwood <rharwood@redhat.com> - 1:10.0.17-7
 - GSSAPI
 
